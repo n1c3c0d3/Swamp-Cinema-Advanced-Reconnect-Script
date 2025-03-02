@@ -19,9 +19,13 @@ As long as the script is running and the device stays on, it will check the foll
 ## Requirements
 - At least Python3
 - Basic linux CLI knowledge
+- Own / have a working Garry's MOD game client installed
+- Have a working internet connection
+- GMOD CEF Fix (will download the file automatically if the script is ran to its root location unless you specify a path)
 
 ## Instructions
 - Download the file swamp_reconnect.py
 - Run the file from your preferred CLI
+
 
 This script is fully open source, feel free to take inspiration as you please.
