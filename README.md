@@ -1,5 +1,7 @@
 # Swamp-Cinema-Advanced-Reconnect-Script
-An easy to run script for Linux users that will keep reconnecting to the Swamp Cinema GMOD server
+An easy to run automation script for Linux users that will keep reconnecting to the Swamp Cinema GMOD server.
+It features minimal logging and console output, will inform you the steps it runs through and any factor that prevents a reconnect.
+It also handles automatically running the GMOD CEF FIX patch if the game fails to launch due to game-breaking steam updates.
 
 ## Important Notes
 Don't forget to edit the contents of the file in your preferred text editor to add the directory path of your GMOD CEF Fix patch binary executable location.
