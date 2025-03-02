@@ -15,3 +15,13 @@ As long as the script is running and the device stays on, it will check the foll
 - If the CEF patch fails, it will check if there is a newer patch available, revalidate, and try again.
 - From here, it will keep trying to reconnect as long the gameserver is still online.
 - If you disconnect from the gameserver, it will keep trying to loop the above.
+
+## Requirements
+- At least Python3
+- Basic linux CLI knowledge
+
+## Instructions
+- Download the file swamp_reconnect.py
+- Run the file from your preferred CLI
+
+This script is fully open source, feel free to take inspiration as you please.
