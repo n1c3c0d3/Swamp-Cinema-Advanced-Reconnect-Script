@@ -25,6 +25,11 @@ As long as the script is running and the device stays on, it will check the foll
 - Have a working internet connection
 - GMOD CEF Fix (will download the file automatically if the script is ran to its root location unless you specify a path)
 
+##Linux Packages used
+tcpdump – for monitoring UDP packets
+pgrep – typically provided by the procps (or procps-ng) package
+xdg-open – from xdg-utils, used to launch the game via Steam connect URL
+
 ## Instructions
 - Download the file swamp_reconnect.py
 - Run the file from your preferred CLI
