@@ -6,21 +6,23 @@ import json
 import re
 import os
 from datetime import datetime
+import pexpect
 
 # ✅ CONFIGURATION
 SWAMP_URL = "https://swamp.sv/"  # Site to get current server IP
 CHECK_DURATION = 5               # Time in seconds to monitor UDP packets
 MIN_PACKET_THRESHOLD = 5         # Minimum UDP packets required
 MAX_RETRIES = 3                  # Max retries for UDP detection
-CHECK_INTERVAL = 10              # Time between each connection check
-FAILED_ATTEMPTS_THRESHOLD = 3    # Attempts before restarting GMod & validating files
+CHECK_INTERVAL = 5               # Reduced time between each connection check (from 10 to 5 seconds)
+FAILED_ATTEMPTS_THRESHOLD = 3    # Attempts for connection failures before validation
 GMOD_LAUNCH_CMD = "xdg-open 'steam://connect/{server_ip}:27015'"  # Command to launch GMod
-GMOD_CEF_FIX_PATH = "<PATH-GOES-HERE>"  # Path to CEF Fix patch executable
+GMOD_CEF_FIX_PATH = "/home/nicegame/Documents/GModCEFCodecFix-Linux"  # Path to CEF Fix patch executable
 
 # ✅ STATE TRACKING
 last_gmod_state = None
 last_connection_state = None
-failed_attempts = 0
+failed_attempts = 0       # For connection failures (GMod running but not connected)
+crash_attempts = 0        # For launch failures (GMod not running, assumed crash)
 server_ip = None
 
 def log_message(message):
@@ -85,30 +87,29 @@ def log_state_change(state_variable, new_state, message):
 
 def launch_gmod():
     """Launches GMod using Steam's connect URL."""
-    global failed_attempts
+    global failed_attempts, crash_attempts
     if server_ip:
         log_message(f"🚀 [INFO] Launching GMod & connecting to {server_ip}:27015...")
         subprocess.run(GMOD_LAUNCH_CMD.format(server_ip=server_ip), shell=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(60)  # Give GMod time to establish connection
+        time.sleep(30)  # Reduced delay from 60 to 30 seconds
         failed_attempts = 0
     else:
         log_message("⚠️ [ERROR] No valid server IP. Cannot launch GMod.")
 
 def validate_and_restart_gmod():
-    """Validates & updates GMod if it fails too many times."""
-    global failed_attempts
-    if failed_attempts >= FAILED_ATTEMPTS_THRESHOLD:
-        log_message("🔄 [INFO] Restarting GMod & verifying game files...")
-        subprocess.run("pkill -9 gmod", shell=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("steam steam://validate/4000", shell=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        failed_attempts = 0  # Reset counter after validation
-        time.sleep(30)  # Allow validation process to complete
-        # Run CEF fix after validation. If it fails, main loop will try again.
-        if not run_gmod_cef_fix():
-            log_message("⚠️ [ERROR] GModCEFCodecFix did not apply successfully after validation.")
+    """Validates & updates GMod if it fails too many times, then runs the CEF patch."""
+    global failed_attempts, crash_attempts
+    log_message("🔄 [INFO] Restarting GMod & verifying game files...")
+    subprocess.run("pkill -9 gmod", shell=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run("steam steam://validate/4000", shell=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    failed_attempts = 0
+    crash_attempts = 0  # Reset crash counter after validation
+    time.sleep(15)  # Reduced delay from 30 to 15 seconds
+    if not run_gmod_cef_fix():
+        log_message("⚠️ [ERROR] GModCEFCodecFix did not apply successfully after validation.")
 
 def check_for_new_cef_fix():
     """
@@ -126,7 +127,6 @@ def check_for_new_cef_fix():
         if not remote_created_at_str:
             log_message("⚠️ [ERROR] Remote release info did not contain a creation date.")
             return
-        # Parse remote release creation date (e.g., "2024-09-26T12:34:56Z")
         remote_date = datetime.strptime(remote_created_at_str, "%Y-%m-%dT%H:%M:%SZ")
     except Exception as e:
         log_message(f"⚠️ [ERROR] Exception while fetching remote release info: {e}")
@@ -136,13 +136,11 @@ def check_for_new_cef_fix():
         log_message(f"⚠️ [WARNING] Local patch file not found at {GMOD_CEF_FIX_PATH}.")
         return
 
-    # Get the local file's modification time as a datetime object.
     local_timestamp = os.path.getmtime(GMOD_CEF_FIX_PATH)
     local_date = datetime.fromtimestamp(local_timestamp)
 
     if remote_date > local_date:
         log_message(f"🌍 [INFO] New patch available (remote: {remote_date}, local: {local_date}). Updating...")
-        # Download the new patch from GitHub raw URL (adjust URL if necessary)
         new_url = "https://raw.githubusercontent.com/solsticegamestudios/GModCEFCodecFix/main/GModCEFCodecFix-Linux"
         try:
             r = requests.get(new_url, timeout=10)
@@ -160,17 +158,16 @@ def check_for_new_cef_fix():
 
 def run_gmod_cef_fix():
     """
-    Runs GModCEFCodecFix to patch game files automatically.
-    Sends "n\n\n" to answer both the yes/no prompt and the "press enter" prompt.
-    Checks the output text for a success indicator.
+    Runs GModCEFCodecFix to patch game files automatically using pexpect in a pseudo-terminal.
+    Sends "n" to answer the yes/no prompt and an extra newline for the "press enter" prompt.
+    Waits for the success indicator "CEFCodecFix applied successfully!".
     Returns True if the patch appears successful, False otherwise.
     """
-    log_message("🛠 [INFO] Running GModCEFCodecFix...")
+    log_message("🛠 [INFO] Running GModCEFCodecFix with pexpect...")
 
     # Check for a new patch and update if needed.
     check_for_new_cef_fix()
 
-    # Verify the file exists and is executable.
     if not os.path.exists(GMOD_CEF_FIX_PATH):
         log_message(f"⚠️ [ERROR] GModCEFCodecFix not found at {GMOD_CEF_FIX_PATH}")
         return False
@@ -183,59 +180,45 @@ def run_gmod_cef_fix():
             return False
 
     try:
-        # Launch the CEF fix process and capture its output.
-        # "n\n\n" is sent so that the prompt for launching GMod is answered with "no"
-        # and the subsequent "press enter" prompt is also answered.
-        cef_process = subprocess.Popen([GMOD_CEF_FIX_PATH],
-                                       stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE,
-                                       stdin=subprocess.PIPE,
-                                       text=True)
-        try:
-            # Wait up to 120 seconds for the process to complete.
-            stdout, stderr = cef_process.communicate(input="n\n\n", timeout=120)
-            log_message("✅ [INFO] GModCEFCodecFix finished executing.")
-            if stdout:
-                log_message(f"Output: {stdout.strip()}")
-            if stderr:
-                log_message(f"Errors: {stderr.strip()}")
-            # Check output for a success indicator.
-            success_indicator = "CEFCodecFix applied successfully!"
-            if success_indicator.lower() in stdout.lower():
-                return True
-            else:
-                log_message("⚠️ [ERROR] Patch output did not indicate success.")
-                return False
-        except subprocess.TimeoutExpired:
-            cef_process.kill()
-            stdout, stderr = cef_process.communicate()
-            log_message("⚠️ [ERROR] GModCEFCodecFix timed out.")
-            if stdout:
-                log_message(f"Partial output: {stdout.strip()}")
-            if stderr:
-                log_message(f"Partial errors: {stderr.strip()}")
-            return False
+        child = pexpect.spawn(GMOD_CEF_FIX_PATH, timeout=120)
+        child.sendline("n")
+        child.sendline("")
+        child.expect("CEFCodecFix applied successfully!", timeout=120)
+        output = child.before.decode() if hasattr(child.before, "decode") else child.before
+        ansi_escape = re.compile(r'\x1B[@-_][0-?]*[ -/]*[@-~]')
+        cleaned_output = ansi_escape.sub('', output)
+        log_message("✅ [INFO] GModCEFCodecFix applied successfully (pexpect).")
+        log_message(f"Output: {cleaned_output}")
+        return True
+    except pexpect.TIMEOUT:
+        log_message("⚠️ [ERROR] GModCEFCodecFix timed out in pexpect mode.")
+        return False
     except Exception as e:
-        log_message(f"⚠️ [ERROR] Failed to run GModCEFCodecFix: {e}")
+        log_message(f"⚠️ [ERROR] Exception in pexpect patch run: {e}")
         return False
 
-# ✅ MAIN CHECK LOOP
 if __name__ == "__main__":
     while True:
-        fetch_server_ip()  # 🔄 Get latest IP from swamp.sv
-
+        fetch_server_ip()
         gmod_running = is_gmod_running()
         udp_active = check_udp_traffic(server_ip) if server_ip else False
 
         if gmod_running and udp_active:
             log_state_change("gmod", True, "🟢 [INFO] GMod is running & connected to the server.")
-            failed_attempts = 0  # Reset failed attempts
+            failed_attempts = 0
+            crash_attempts = 0  # Reset crash counter on success
         elif not gmod_running:
-            log_state_change("gmod", False, "❌ [INFO] GMod is NOT running. Restarting GMod...")
+            log_state_change("gmod", False, "❌ [INFO] GMod is NOT running. Attempting to launch...")
+            crash_attempts += 1
             launch_gmod()
+            if crash_attempts >= 3:
+                log_message("⚠️ [INFO] 3 consecutive failed launches detected. Validating and reapplying CEF patch...")
+                validate_and_restart_gmod()
+                crash_attempts = 0
         else:
             log_state_change("connection", False, "🔴 [INFO] GMod is running but NOT connected.")
             failed_attempts += 1
-            validate_and_restart_gmod()
+            if failed_attempts >= FAILED_ATTEMPTS_THRESHOLD:
+                validate_and_restart_gmod()
 
-        time.sleep(CHECK_INTERVAL)  # 🔄 Wait before next check
+        time.sleep(CHECK_INTERVAL)
