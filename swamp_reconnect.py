@@ -16,7 +16,7 @@ MAX_RETRIES = 3                  # Max retries for UDP detection
 CHECK_INTERVAL = 5               # Reduced time between each connection check (from 10 to 5 seconds)
 FAILED_ATTEMPTS_THRESHOLD = 3    # Attempts for connection failures before validation
 GMOD_LAUNCH_CMD = "xdg-open 'steam://connect/{server_ip}:27015'"  # Command to launch GMod
-GMOD_CEF_FIX_PATH = "/home/nicegame/Documents/GModCEFCodecFix-Linux"  # Path to CEF Fix patch executable
+GMOD_CEF_FIX_PATH = "<PATH-GOES-HERE>  # Path to CEF Fix patch executable
 
 # ✅ STATE TRACKING
 last_gmod_state = None
