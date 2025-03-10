@@ -1,5 +1,5 @@
 # Swamp-Cinema-Advanced-Reconnect-Script
-A python-based automation script for Windows or Linux users for keeping your Garry's Mod game client reconnecting to the Swamp Cinema GMOD server indefinitely.
+A python-based automation script for Windows or Linux users to maintain connection for your Garry's Mod game client. Basically, this should assist in reconnecting to the Swamp Cinema GMOD server indefinitely.
 It features minimal logging, will inform you relevant information for reconnection and warns user of points of failure.
 It also handles automatically running the GMOD CEF FIX patch if the game fails to launch due to game-breaking steam updates.
 
