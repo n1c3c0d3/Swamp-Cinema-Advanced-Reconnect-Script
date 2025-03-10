@@ -14,7 +14,7 @@ As long as the script is running, it will check the following information and co
 - If you disconnect from the gameserver, it will keep trying to loop the above.
 
 ## Basic Instructions
-- Download the file swamp_reconnect.py
+- Download the file `swamp_reconnect.py`
 - Run the file from your preferred CLI / terminal
 
 ## Important Notes
@@ -42,7 +42,7 @@ Assuming you have Python installed before using this script, you should either h
 
 After installing Wireshark, you should also set the PATH in Windows System Environment Variables to the Wireshark.exe file location on your system. This will make it easier for the script to run wireshark commands from almost any directory path you're using. If you forget to set the PATH, the script may not have access to the needed wireshark commands for detecting the connection to the gameserver.
 
-From Windows Start, look for 'Edit the system environment variables'. Then look for the "Environment Variables" button. Now under System variables, look for `Path` and click `Edit...` Next, paste the directory to your Wireshark install. A standard path would be: `C:\Program Files\Wireshark`
+From Windows Start, look for `Edit the system environment variables`. Then look for the `Environment Variables` button. Now under System variables, look for `Path` and click `Edit...` Next, paste the directory to your Wireshark install. A standard path would be: `C:\Program Files\Wireshark`
 
 ## Linux Requirements
 - Python 3 (3.6+).
