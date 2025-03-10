@@ -13,8 +13,10 @@ As long as the script is running, it will check the following information and co
 - From here, it will keep trying to reconnect as long the gameserver is still online.
 - If you disconnect from the gameserver, it will keep trying to loop the above.
 
-## Basic Instructions
+## Basic Install Instructions
 - Download the file `swamp_reconnect.py`
+- Install the Python packages in `requirements.txt`
+- Ensure all other dependencies listed below are installed and configured as needed.
 - Run the file from your preferred CLI / terminal
 
 ## Important Notes
