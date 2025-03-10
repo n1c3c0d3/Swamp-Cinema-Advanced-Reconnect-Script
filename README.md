@@ -53,9 +53,9 @@ To run this script, simply set executable permissions on the file using the chmo
 - GMOD CEF Fix (will download the file automatically if the script is ran to its root location unless you specify a path)
 
 ## Linux packages used
-tcpdump – for monitoring UDP packets
-pgrep – typically provided by the procps (or procps-ng) package
-xdg-open – from xdg-utils, used to launch the game via Steam connect URL
+- tcpdump – for monitoring UDP packets
+- pgrep – typically provided by the procps (or procps-ng) package
+- xdg-open – from xdg-utils, used to launch the game via Steam connect URL
 
 ## Python packages used
 See requirements.txt
