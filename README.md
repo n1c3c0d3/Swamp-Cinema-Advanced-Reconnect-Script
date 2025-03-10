@@ -52,12 +52,12 @@ From Windows Start, look for 'Edit the system environment variables'. Then look 
 - Own + have a working Garry's MOD game client installed
 - Have a working internet connection
 
-### Linux packages used
+### Linux packages needed
 - tcpdump – for monitoring UDP packets
 - pgrep – typically provided by the procps (or procps-ng) package
 - xdg-open – from xdg-utils, used to launch the game via Steam connect URL
 
-### Python packages used
+### Python packages needed
 See requirements.txt
 
 This script is fully open source, feel free to take inspiration as you please.
