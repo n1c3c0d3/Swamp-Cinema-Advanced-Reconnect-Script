@@ -33,8 +33,8 @@ Before running the script in powershell or command prompt, make sure you are run
 
 For example, to run the script from a folder on your desktop, you would enter the typical commands below
 
-```
-cd C:/users/username/Desktop/swamp_reconnect/
+```pwsh
+cd "C:/users/username/Desktop/swamp_reconnect/"
 python swamp_reconnect.py
 ```
 
