@@ -9,11 +9,6 @@ import pexpect
 import shutil
 import sys
 
-# ------------------------------
-# Debug Flag
-# ------------------------------
-DEBUG = False  # Set to True for verbose debugging
-
 def debug_log(msg):
     if DEBUG:
         print(f"DEBUG: {msg}")
