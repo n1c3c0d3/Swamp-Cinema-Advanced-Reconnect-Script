@@ -28,16 +28,16 @@ Before running the script in powershell or command prompt, make sure you are run
 
 For example, to run the script from a folder on your desktop, you would enter the typical commands below
 
-'''
+```
 cd C:/users/username/Desktop/swamp_reconnect/
 python swamp_reconnect.py
-'''
+```
 
 Assuming you have Python installed before using this script, you should either have a Python System PATH set or a Python Virtual Environment (For more information see https://docs.python.org/3/using/windows.html). As long as you are able to run Python commands in your CLI, you should be able to at least launch the script and can move on to review the additional instructions.
 
 After installing Wireshark, you should also set the PATH in Windows System Environment Variables to the Wireshark.exe file location on your system. This will make it easier for the script to run wireshark commands from almost any directory path you're using. If you forget to set the PATH, the script may not have access to the needed wireshark commands for detecting the connection to the gameserver.
 
-From Windows Start, look for 'Edit the system environment variables'. Then look for the "Environment Variables" button. Now under System variables, look for "Path" and click "Edit..." Next, paste the directory to your Wireshark install. A standard path would be: `C:\Program Files\Wireshark`
+From Windows Start, look for 'Edit the system environment variables'. Then look for the "Environment Variables" button. Now under System variables, look for `Path` and click `Edit...` Next, paste the directory to your Wireshark install. A standard path would be: `C:\Program Files\Wireshark`
 
 ### Linux Instructions
 To run this script, simply set executable permissions on the file using the chmod command and open in your preferred linux terminal (e.g. gnome, konsole, kitty)
