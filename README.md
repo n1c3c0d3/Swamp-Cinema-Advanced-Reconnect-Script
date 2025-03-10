@@ -22,9 +22,11 @@ Please install the utilities below. This script uses these utilities to detect n
 
 ## Windows Requirements
 - Python 3 (3.6+).
-- Python packages: requests, pexpect (install via `pip install -r requirements.txt`).
+- Python packages: install via `pip install -r requirements.txt`.
 - Npcap: download from npcap.org; enable non‑administrator mode during installation.
 - Wireshark: ensure its folder is in your PATH.
+- Own + have a working Garry's MOD game client installed
+- Have a working internet connection
 
 ### Windows Instructions
 Before running the script in powershell or command prompt, make sure you are running from the root directory where the file is stored on your PC.
@@ -46,11 +48,12 @@ From Windows Start, look for 'Edit the system environment variables'. Then look 
 To run this script, simply set executable permissions on the file using the chmod command and open in your preferred linux terminal (e.g. gnome, konsole, kitty)
 
 ## Requirements
-- At least Python3
+- Python 3 (3.6+).
+- Python packages: install via `pip install -r requirements.txt`.
+- GMOD CEF Fix (will download the file automatically to its root location unless you specify a path) *WIP
 - Basic linux CLI knowledge
-- Own / have a working Garry's MOD game client installed
+- Own + have a working Garry's MOD game client installed
 - Have a working internet connection
-- GMOD CEF Fix (will download the file automatically if the script is ran to its root location unless you specify a path)
 
 ## Linux packages used
 - tcpdump – for monitoring UDP packets
