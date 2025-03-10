@@ -20,8 +20,10 @@ As long as the script is running, it will check the following information and co
 ## Important Notes
 
 ## Windows Requirements
-- Install Wireshark
-- Install dumpcap
+- Python 3 (3.6+).
+- Python packages: requests, pexpect (install via `pip install -r requirements.txt`).
+- Npcap: download from npcap.org; enable non‑administrator mode during installation.
+- Wireshark: ensure its folder is in your PATH.
 
 ### Windows Instructions
 Before running the script in powershell or command prompt, make sure you are running from the root directory where the file is stored on your PC.
