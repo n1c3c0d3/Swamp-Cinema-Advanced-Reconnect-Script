@@ -44,10 +44,7 @@ After installing Wireshark, you should also set the PATH in Windows System Envir
 
 From Windows Start, look for 'Edit the system environment variables'. Then look for the "Environment Variables" button. Now under System variables, look for `Path` and click `Edit...` Next, paste the directory to your Wireshark install. A standard path would be: `C:\Program Files\Wireshark`
 
-### Linux Instructions
-To run this script, simply set executable permissions on the file using the chmod command and open in your preferred linux terminal (e.g. gnome, konsole, kitty)
-
-## Requirements
+## Linux Requirements
 - Python 3 (3.6+).
 - Python packages: install via `pip install -r requirements.txt`.
 - GMOD CEF Fix (will download the file automatically to its root location unless you specify a path) *WIP
@@ -55,12 +52,15 @@ To run this script, simply set executable permissions on the file using the chmo
 - Own + have a working Garry's MOD game client installed
 - Have a working internet connection
 
-## Linux packages used
+### Linux packages used
 - tcpdump – for monitoring UDP packets
 - pgrep – typically provided by the procps (or procps-ng) package
 - xdg-open – from xdg-utils, used to launch the game via Steam connect URL
 
-## Python packages used
+### Python packages used
 See requirements.txt
 
 This script is fully open source, feel free to take inspiration as you please.
+
+### Linux Instructions
+To run this script, simply set executable permissions on the file using the chmod command and open in your preferred linux terminal (e.g. gnome, konsole, kitty)
