@@ -19,8 +19,8 @@ Download the latest release for your operating system under Releases or use the 
 - [Download for Windows](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/releases/download/v1.0.0-beta.01/swamp_reconnect.exe)
 
 **Notice:** 
-Windows users: Wireshark is required seperately and must be installed on your system for the application to work. See (https://www.wireshark.org/)
-Linux users: Must install missing packages, application will warn you if the packages are missing or not detected on your distro instance.
+- Windows users: Wireshark is required seperately and must be installed on your system for the application to work. See (https://www.wireshark.org/)
+- Linux users: Must install missing packages, application will warn you if the packages are missing or not detected on your distro instance.
 
 ## Information for script users
 
