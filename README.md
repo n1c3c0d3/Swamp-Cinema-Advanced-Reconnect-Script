@@ -13,7 +13,7 @@ As long as the script is running, it will check the following information and co
 - From here, it will keep trying to reconnect as long the gameserver is still online.
 - If you disconnect from the gameserver, it will keep trying to loop the above.
 
-### How to Install
+## How to Install
 Download the latest release for your operating system under Releases or use the links below for the latest release binaries.
 - [Download for Linux](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/releases/download/v1.0.0-beta.01/swamp_reconnect.Linux)
 - [Download for Windows](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/releases/download/v1.0.0-beta.01/swamp_reconnect.exe)
@@ -21,7 +21,8 @@ Download the latest release for your operating system under Releases or use the 
 
 
 
-### Script Users
+## Script Users
+
 ## Basic Install Instructions
 - Download the file `swamp_reconnect.py`
 - Install the Python packages in `requirements.txt`
