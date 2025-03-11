@@ -18,10 +18,9 @@ Download the latest release for your operating system under Releases or use the 
 - [Download for Linux](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/releases/download/v1.0.0-beta.01/swamp_reconnect.Linux)
 - [Download for Windows](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/releases/download/v1.0.0-beta.01/swamp_reconnect.exe)
 
+If using the executables above, pleas see Windows Requirements and Liunx Requirements sections below. These utilities and components are still required seperately on your system for Swamp Reconnect application to run properly.
 
-
-
-## Script Users
+## Information for script users
 
 ## Basic Install Instructions
 - Download the file `swamp_reconnect.py`
