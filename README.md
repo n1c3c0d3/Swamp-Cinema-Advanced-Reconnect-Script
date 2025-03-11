@@ -22,7 +22,7 @@ Download the latest release for your operating system under Releases or use the 
 - Windows users: Wireshark is required seperately and must be installed on your system for the application to work as intended. See (https://www.wireshark.org/)
 - Linux users: Must install missing packages, application will warn you if the packages are missing or not detected on your distro instance.
 
-## **Information for script users**
+#### Information for script users
 ## Basic Install Instructions
 - Download the file `swamp_reconnect.py`
 - Install the Python packages in `requirements.txt`
