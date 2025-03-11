@@ -59,7 +59,7 @@ From Windows Start, look for `Edit the system environment variables`. Then look 
 
 ## Linux Requirements
 - Python 3 (3.6+).
-- Python packages: install via `pip install -r requirements.txt`.
+- Python packages: requests, pexpect
 - GMOD CEF Fix (will download the file automatically to its root location unless you specify a path) *WIP
 - Basic linux CLI knowledge
 - Own + have a working Garry's MOD game client installed
@@ -71,8 +71,8 @@ From Windows Start, look for `Edit the system environment variables`. Then look 
 - xdg-open – from xdg-utils, used to launch the game via Steam connect URL
 
 ### Python packages needed
-See requirements.txt
-
+See `requirements.txt`
+install via `pip install -r requirements.txt`.
 This script is fully open source, feel free to take inspiration as you please.
 
 ### Linux Instructions
