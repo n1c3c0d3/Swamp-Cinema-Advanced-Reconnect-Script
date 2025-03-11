@@ -9,29 +9,35 @@ import pexpect
 import shutil
 import sys
 
+DEBUG = False  # Set to True for verbose debugging
+
 def debug_log(msg):
     if DEBUG:
         print(f"DEBUG: {msg}")
 
-# ------------------------------
-# CONFIGURATION (Platform-Specific)
-# ------------------------------
 SWAMP_URL = "https://swamp.sv/"  # Site to get current server IP
 CHECK_DURATION = 5               # Seconds to monitor traffic (time-based capture)
 MAX_RETRIES = 3                  # Max retries for detection
 CHECK_INTERVAL = 5               # Time between each connection check (in seconds)
 FAILED_ATTEMPTS_THRESHOLD = 3    # Connection failures before validation
 
+# A threshold for how many packets to capture before deciding there's traffic
+MIN_PACKET_THRESHOLD = 5
+
 if os.name == 'nt':
     # Windows settings
-    GMOD_LAUNCH_CMD = "start steam://connect/{server_ip}:27015"
+    # Instead of storing "start steam://connect/...", store just the steam URI
+    # so we can run it with ["cmd", "/c", "start", steam_uri].
+    GMOD_STEAM_URI = "steam://connect/{server_ip}:27015"
+    GMOD_VALIDATE_URI = "steam://validate/4000"
     # Default placeholder for Windows
     GMOD_CEF_FIX_PATH = r"C:\Path\To\GModCEFCodecFix-Windows.exe"
     PROCESS_NAMES = ["gmod.exe"]
     REQUIRED_CMDS = ["dumpcap"]
 else:
     # Linux settings
-    GMOD_LAUNCH_CMD = "xdg-open 'steam://connect/{server_ip}:27015'"
+    GMOD_STEAM_URI = "steam://connect/{server_ip}:27015"
+    GMOD_VALIDATE_URI = "steam://validate/4000"
     # Default placeholder for Linux
     GMOD_CEF_FIX_PATH = "/Path/To/GModCEFCodecFix-Linux"
     PROCESS_NAMES = ["gmod", "hl2_linux", "hl2.sh", "garrysmod"]
@@ -46,9 +52,6 @@ failed_attempts = 0   # For connection failures (GMod running but not connected)
 crash_attempts = 0    # For launch failures (GMod not running, assumed crash)
 server_ip = None
 
-# ------------------------------
-# HELPER FUNCTIONS
-# ------------------------------
 def log_message(message):
     print(f"{time.strftime('%Y-%m-%d %I:%M:%S %p')} {message}")
 
@@ -64,6 +67,9 @@ def check_dependencies():
         log_message("✅ [INFO] All required system commands are available.")
 
 def fetch_server_ip():
+    """
+    Fetches the current server IP from SWAMP_URL and updates the global server_ip variable.
+    """
     global server_ip
     try:
         response = requests.get(SWAMP_URL, timeout=5)
@@ -82,10 +88,14 @@ def fetch_server_ip():
         log_message(f"⚠️ [ERROR] Failed to fetch server IP: {e}")
 
 def is_gmod_running():
+    """
+    Checks if GMod (or its processes) are running, depending on the platform.
+    """
     if os.name == 'nt':
         try:
-            output = subprocess.check_output("tasklist", shell=True, text=True)
-            debug_log(f"tasklist output: {output[:100]}...")
+            # Avoid shell=True
+            output = subprocess.check_output(["tasklist"], text=True)
+            debug_log(f"tasklist output: {output[:200]}...")
             for proc in PROCESS_NAMES:
                 if proc.lower() in output.lower():
                     debug_log(f"Found process {proc} in tasklist.")
@@ -115,7 +125,12 @@ def get_windows_capture_interfaces():
         log_message("⚠️ [ERROR] dumpcap not found.")
         return []
     try:
-        result = subprocess.run("dumpcap -D", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        # No shell=True
+        result = subprocess.run([dumpcap_path, "-D"],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True,
+                                timeout=10)
         lines = result.stdout.splitlines()
         debug_log(f"dumpcap -D output: {lines}")
         return lines
@@ -136,18 +151,28 @@ def find_active_interface(ip):
     interfaces = get_windows_capture_interfaces()
     candidate_ifaces = []
     for line in interfaces:
-        match = re.match(r"(\d+)\.", line)
-        if match:
-            candidate_ifaces.append(match.group(1))
+        match_iface = re.match(r"(\d+)\.", line)
+        if match_iface:
+            candidate_ifaces.append(match_iface.group(1))
     debug_log(f"Candidate interfaces: {candidate_ifaces}")
     
     filter_str = f"host {ip}"
     for iface in candidate_ifaces:
         temp_file = "temp_test.pcap"
-        cmd = f'"{dumpcap_path}" -i {iface} -a duration:2 -f "{filter_str}" -w {temp_file}'
+        # Convert cmd string to a list
+        cmd = [
+            dumpcap_path,
+            "-i", iface,
+            "-a", "duration:2",
+            "-f", filter_str,
+            "-w", temp_file
+        ]
         debug_log(f"Testing interface {iface} with filter: {filter_str}")
         try:
-            subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
+            subprocess.run(cmd,
+                           stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE,
+                           timeout=3)
             if os.path.exists(temp_file):
                 size = os.path.getsize(temp_file)
                 debug_log(f"Interface {iface} produced file size: {size}")
@@ -168,6 +193,9 @@ def check_udp_traffic(ip, retries=MAX_RETRIES):
     On Windows, uses dumpcap with a selected interface and the BPF filter "host {ip}" with a time-based capture.
     On Linux, uses tcpdump with the same filter.
     """
+    if not ip:
+        return False
+
     if os.name == 'nt':
         dumpcap_path = shutil.which("dumpcap")
         if not dumpcap_path:
@@ -177,10 +205,19 @@ def check_udp_traffic(ip, retries=MAX_RETRIES):
         filter_str = f"host {ip}"
         for attempt in range(retries):
             temp_file = "temp_capture.pcap"
-            cmd = f'"{dumpcap_path}" -i {interface} -a duration:{CHECK_DURATION} -f "{filter_str}" -w {temp_file}'
+            cmd = [
+                dumpcap_path,
+                "-i", interface,
+                "-a", f"duration:{CHECK_DURATION}",
+                "-f", filter_str,
+                "-w", temp_file
+            ]
             debug_log(f"Attempt {attempt+1}: Running command: {cmd}")
             try:
-                subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=CHECK_DURATION+2)
+                subprocess.run(cmd,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE,
+                               timeout=CHECK_DURATION+2)
                 if os.path.exists(temp_file):
                     size = os.path.getsize(temp_file)
                     debug_log(f"Capture file size: {size}")
@@ -194,15 +231,21 @@ def check_udp_traffic(ip, retries=MAX_RETRIES):
             time.sleep(2)
         return False
     else:
+        # Linux path
         for attempt in range(retries):
-            filter_str = f"host {ip}"
-            cmd = f"timeout {CHECK_DURATION} tcpdump -nn -q -c {MIN_PACKET_THRESHOLD} '{filter_str}'"
+            # Equivalent to: timeout 5 tcpdump -nn -q -c 5 'host {ip}'
+            cmd = [
+                "timeout", str(CHECK_DURATION),
+                "tcpdump", "-nn", "-q", "-c", str(MIN_PACKET_THRESHOLD),
+                "host", ip
+            ]
             debug_log(f"Attempt {attempt+1}: Running command: {cmd}")
-            result = subprocess.run(cmd, shell=True,
+            result = subprocess.run(cmd,
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL,
                                     text=True)
             debug_log(f"tcpdump result: {result.stdout.strip()}")
+            # If returncode == 0 and we see IP in the output, assume success
             if result.returncode == 0 and ip in result.stdout:
                 return True
             time.sleep(2)
@@ -220,28 +263,54 @@ def log_state_change(state_variable, new_state, message):
             last_connection_state = new_state
 
 def launch_gmod():
-    global failed_attempts, crash_attempts
+    """
+    Launch GMod and connect to the server using platform-appropriate commands.
+    """
+    global failed_attempts, crash_attempts, server_ip
     if server_ip:
         log_message(f"🚀 [INFO] Launching GMod & connecting to {server_ip}:27015...")
-        subprocess.run(GMOD_LAUNCH_CMD.format(server_ip=server_ip), shell=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.name == 'nt':
+            # On Windows, use cmd /c start <steam_uri>
+            steam_uri = GMOD_STEAM_URI.format(server_ip=server_ip)
+            subprocess.run(["cmd", "/c", "start", steam_uri],
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        else:
+            # On Linux, use xdg-open <steam_uri>
+            steam_uri = GMOD_STEAM_URI.format(server_ip=server_ip)
+            subprocess.run(["xdg-open", steam_uri],
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
         time.sleep(30)
         failed_attempts = 0
     else:
         log_message("⚠️ [ERROR] No valid server IP. Cannot launch GMod.")
 
 def validate_and_restart_gmod():
+    """
+    Kills GMod, validates files via Steam, and re-applies the CEF patch.
+    """
     global failed_attempts, crash_attempts
     log_message("🔄 [INFO] Restarting GMod & verifying game files...")
     if os.name == 'nt':
+        # Kill GMod
         try:
-            subprocess.run("taskkill /F /IM gmod.exe", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["taskkill", "/F", "/IM", "gmod.exe"],
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
         except Exception as e:
             debug_log(f"Error during taskkill: {e}")
-        subprocess.run("start steam://validate/4000", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Validate GMod
+        subprocess.run(["cmd", "/c", "start", GMOD_VALIDATE_URI],
+                       stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
     else:
-        subprocess.run("pkill -9 gmod", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("steam steam://validate/4000", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill", "-9", "gmod"],
+                       stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+        subprocess.run(["steam", GMOD_VALIDATE_URI],
+                       stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
     failed_attempts = 0
     crash_attempts = 0
     time.sleep(15)
@@ -249,6 +318,9 @@ def validate_and_restart_gmod():
         log_message("⚠️ [ERROR] GModCEFCodecFix did not apply successfully after validation.")
 
 def check_for_new_cef_fix():
+    """
+    Checks GitHub for a newer GModCEFCodecFix release. If newer, downloads and replaces the local file.
+    """
     try:
         response = requests.get("https://api.github.com/repos/solsticegamestudios/GModCEFCodecFix/releases/latest", timeout=10)
         debug_log(f"GitHub release status: {response.status_code}")
@@ -277,9 +349,11 @@ def check_for_new_cef_fix():
     if remote_date > local_date:
         log_message(f"🌍 [INFO] New patch available (remote: {remote_date}, local: {local_date}). Updating...")
         if os.name == 'nt':
-            new_url = "https://raw.githubusercontent.com/solsticegamestudios/GModCEFCodecFix/main/GModCEFCodecFix-Windows.exe"
+            # Example link for Windows
+            new_url = "https://github.com/solsticegamestudios/GModCEFCodecFix/releases/download/20240926/GModCEFCodecFix-Windows.zip"
         else:
-            new_url = "https://raw.githubusercontent.com/solsticegamestudios/GModCEFCodecFix/main/GModCEFCodecFix-Linux"
+            # Example link for Linux
+            new_url = "https://github.com/solsticegamestudios/GModCEFCodecFix/releases/download/20240926/GModCEFCodecFix-Linux"
         try:
             r = requests.get(new_url, timeout=10)
             if r.status_code == 200:
@@ -295,6 +369,9 @@ def check_for_new_cef_fix():
         log_message(f"✅ [INFO] Local patch is up-to-date (remote: {remote_date}, local: {local_date}).")
 
 def run_gmod_cef_fix():
+    """
+    Runs the GModCEFCodecFix tool via pexpect.
+    """
     log_message("🛠 [INFO] Running GModCEFCodecFix with pexpect...")
     check_for_new_cef_fix()
 
@@ -333,8 +410,6 @@ def run_gmod_cef_fix():
 def update_gmod_cef_path_in_source(new_path):
     """
     Updates the GMOD_CEF_FIX_PATH value in the source file permanently.
-    Reads the current source file, replaces the line that defines GMOD_CEF_FIX_PATH,
-    and writes the updated file back.
     """
     file_path = os.path.realpath(__file__)
     try:
@@ -353,8 +428,6 @@ def update_gmod_cef_path_in_source(new_path):
 def prompt_for_gmod_cef_path():
     """
     Prompts the user to enter the GMOD CEF path if the current path is still the default.
-    Checks if the entered path is valid (exists and is a file). Updates the global variable
-    and the source file accordingly.
     """
     global GMOD_CEF_FIX_PATH
     if os.name == 'nt':
@@ -377,7 +450,9 @@ def prompt_for_gmod_cef_path():
 # ------------------------------
 # MAIN LOOP
 # ------------------------------
-if __name__ == "__main__":
+def main():
+    global server_ip, failed_attempts, crash_attempts
+
     prompt_for_gmod_cef_path()  # Prompt the user if the path is not set properly.
     check_dependencies()
     
@@ -407,3 +482,6 @@ if __name__ == "__main__":
                 validate_and_restart_gmod()
 
         time.sleep(CHECK_INTERVAL)
+
+if __name__ == "__main__":
+    main()
