@@ -31,7 +31,7 @@ if os.name == 'nt':
     GMOD_STEAM_URI = "steam://connect/{server_ip}:27015"
     GMOD_VALIDATE_URI = "steam://validate/4000"
     # Default placeholder for Windows
-    GMOD_CEF_FIX_PATH = r"C:\Path\To\GModCEFCodecFix-Windows.exe"
+GMOD_CEF_FIX_PATH = r"/home/nicegame/Documents/GModCEFCodecFix-Linux"  # Updated by configuration prompt
     PROCESS_NAMES = ["gmod.exe"]
     REQUIRED_CMDS = ["dumpcap"]
 else:
@@ -39,7 +39,7 @@ else:
     GMOD_STEAM_URI = "steam://connect/{server_ip}:27015"
     GMOD_VALIDATE_URI = "steam://validate/4000"
     # Default placeholder for Linux
-    GMOD_CEF_FIX_PATH = "/Path/To/GModCEFCodecFix-Linux"
+GMOD_CEF_FIX_PATH = r"/home/nicegame/Documents/GModCEFCodecFix-Linux"  # Updated by configuration prompt
     PROCESS_NAMES = ["gmod", "hl2_linux", "hl2.sh", "garrysmod"]
     REQUIRED_CMDS = ["tcpdump", "pgrep", "xdg-open"]
 
@@ -93,7 +93,6 @@ def is_gmod_running():
     """
     if os.name == 'nt':
         try:
-            # Avoid shell=True
             output = subprocess.check_output(["tasklist"], text=True)
             debug_log(f"tasklist output: {output[:200]}...")
             for proc in PROCESS_NAMES:
@@ -125,7 +124,6 @@ def get_windows_capture_interfaces():
         log_message("⚠️ [ERROR] dumpcap not found.")
         return []
     try:
-        # No shell=True
         result = subprocess.run([dumpcap_path, "-D"],
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
@@ -438,7 +436,7 @@ def prompt_for_gmod_cef_path():
         new_path = input("Enter the full path to the GModCEFCodecFix executable: ").strip()
         if new_path:
             if os.path.isfile(new_path):
-                GMOD_CEF_FIX_PATH = new_path
+GMOD_CEF_FIX_PATH = r"/home/nicegame/Documents/GModCEFCodecFix-Linux"  # Updated by configuration prompt
                 update_gmod_cef_path_in_source(new_path)
                 break
             else:
