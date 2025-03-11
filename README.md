@@ -79,6 +79,7 @@ This script is fully open source, feel free to take inspiration as you please.
 To run this script, simply set executable permissions on the file using the chmod command and open in your preferred linux terminal (e.g. gnome, konsole, kitty)
 
 ## Updates
-I will check back here regularly and post updates when needed and when I have new ideas. You can check if there are updates to the script at the top of the page. 
-You should see a `Update swamp_reconnect.py` with the most recent update time under Commit. 
-Once I feel the script is optimized well, I may create a release version with binaries/executable so it is easier to run. Until then, please use the scripts and instructions above.
+I will check back here regularly and post updates when needed and when I have new ideas. You can check if there are updates on the Release page, or check the commit history above for more frequent changes.
+
+If significant changes or improvements are made, I will add new versions of the executable applications (binaries) on the Release page.
+For experienced users, it is recommended to use the scripts for easier debugging if it does not run as intended.
