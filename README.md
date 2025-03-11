@@ -15,7 +15,7 @@ As long as the script is running, it will check the following information and co
 
 ## How to Install
 Download the latest release for your operating system under Releases or use the links below for the latest release binaries.
-- ~~[Download for Linux](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/releases/download/v1.0.0-beta.01/swamp_reconnect.Linux)~~ Still WIP, binary not working as intended
+- ~~[Download for Linux](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/releases/download/v1.0.0-beta.01/swamp_reconnect.Linux)~~ Linux binary Still WIP, binary not working as intended. Please use script instructions for Linux.
 - [Download for Windows](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/releases/download/v1.0.0-beta.01/swamp_reconnect.exe)
 
 **Notice if using release binaries (application downloaded above):** 
