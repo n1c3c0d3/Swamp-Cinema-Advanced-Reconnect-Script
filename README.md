@@ -74,7 +74,6 @@ A standard path would be: `C:\Program Files\Wireshark`
 ### Python packages needed
 See `requirements.txt`  
 install via `pip install -r requirements.txt`.  
-This script is fully open source, feel free to take inspiration as you please.  
 
 ### Linux Instructions
 To run this script, simply set executable permissions on the file using the chmod command and open in your preferred linux terminal (e.g. gnome, konsole, kitty)
@@ -84,3 +83,7 @@ I will check back here regularly and post updates when needed and when I have ne
 
 If significant changes or improvements are made, I will add new versions of the executable applications (binaries) on the Release page.  
 For experienced users, it is recommended to use the scripts for easier debugging if it does not run as intended.  
+
+## Licensing
+This script is fully open source, feel free to take inspiration as you please.  
+
