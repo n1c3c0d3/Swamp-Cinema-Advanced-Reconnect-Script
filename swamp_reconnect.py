@@ -38,9 +38,38 @@ else:
 # Global variable for the GModCEFCodecFix executable path.
 GMOD_CEF_FIX_PATH = ""
 
-# ------------------------------
+# This function extracts the zip and recursively searches for the executable
+def extract_gmod_cef_fix(zip_path, extract_to):
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(extract_to)
+    gmod_cef_exe = None
+    gmod_cef_folder = None
+    for root, dirs, files in os.walk(extract_to):
+        for file in files:
+            if file.lower().endswith(".exe") and "gmodcefcodecfix" in file.lower():
+                gmod_cef_exe = os.path.join(root, file)
+                gmod_cef_folder = root
+                break
+        if gmod_cef_exe:
+            break
+    if gmod_cef_exe and gmod_cef_folder:
+        # Copy the entire folder (with the exe and dependencies) to a new destination
+        dest_folder = os.path.join(os.path.dirname(zip_path), "GModCEFCodecFix")
+        if os.path.exists(dest_folder):
+            shutil.rmtree(dest_folder)
+        shutil.copytree(gmod_cef_folder, dest_folder)
+        # Update executable path to point inside the new folder
+        exe_name = os.path.basename(gmod_cef_exe)
+        global GMOD_CEF_FIX_PATH
+        GMOD_CEF_FIX_PATH = os.path.join(dest_folder, exe_name)
+        os.chmod(GMOD_CEF_FIX_PATH, 0o755)
+        log_message(f"✅ [INFO] Extracted GModCEFCodecFix to: {dest_folder}")
+        return dest_folder
+    else:
+        log_message("⚠️ [ERROR] No executable found in the extracted zip.")
+        return None
+
 # STATE TRACKING
-# ------------------------------
 last_gmod_state = None
 last_connection_state = None
 failed_attempts = 0   # For connection failures (GMod running but not connected)
@@ -309,7 +338,6 @@ def check_for_new_cef_fix():
     if remote_date > local_date:
         log_message(f"🌍 [INFO] New patch available (remote: {remote_date}, local: {local_date}). Updating...")
         if os.name == 'nt':
-            # Use dynamic release info instead of hardcoded URLs
             asset_url = None
             try:
                 response = requests.get("https://api.github.com/repos/solsticegamestudios/GModCEFCodecFix/releases/latest", timeout=10)
@@ -317,13 +345,13 @@ def check_for_new_cef_fix():
                 assets = data.get("assets", [])
                 for asset in assets:
                     name = asset.get("name", "")
-                    if name.lower().endswith(".exe") and "GModCEFCodecFix" in name:
+                    if name.lower().endswith(".exe") and "gmodcefcodecfix" in name.lower():
                         asset_url = asset.get("browser_download_url")
                         break
                 if asset_url is None:
                     for asset in assets:
                         name = asset.get("name", "")
-                        if name.lower().endswith(".zip") and "GModCEFCodecFix" in name:
+                        if name.lower().endswith(".zip") and "gmodcefcodecfix" in name.lower():
                             asset_url = asset.get("browser_download_url")
                             break
             except Exception as e:
@@ -353,7 +381,7 @@ def check_for_new_cef_fix():
                 assets = data.get("assets", [])
                 for asset in assets:
                     name = asset.get("name", "")
-                    if "linux" in name.lower() and "GModCEFCodecFix" in name:
+                    if "linux" in name.lower() and "gmodcefcodecfix" in name.lower():
                         asset_url = asset.get("browser_download_url")
                         break
             except Exception as e:
@@ -369,6 +397,7 @@ def check_for_new_cef_fix():
                         os.chmod(linux_path, 0o755)
                         GMOD_CEF_FIX_PATH = linux_path
                         log_message("✅ [INFO] Updated GModCEFCodecFix for Linux.")
+                        return
                     else:
                         log_message("⚠️ [ERROR] Failed to download the Linux asset.")
                 except Exception as e:
@@ -442,13 +471,8 @@ def auto_configure_gmod_cef_path():
                             extract_dir = os.path.join(root, "GModCEFCodecFix_extracted")
                             os.makedirs(extract_dir, exist_ok=True)
                             try:
-                                with zipfile.ZipFile(candidate, 'r') as zip_ref:
-                                    zip_ref.extractall(extract_dir)
-                                for f in os.listdir(extract_dir):
-                                    if f.lower().endswith(".exe") and "GModCEFCodecFix" in f:
-                                        GMOD_CEF_FIX_PATH = os.path.join(extract_dir, f)
-                                        log_message(f"Found and extracted GModCEFCodecFix exe: {GMOD_CEF_FIX_PATH}")
-                                        return GMOD_CEF_FIX_PATH
+                                extract_gmod_cef_fix(candidate, extract_dir)
+                                return GMOD_CEF_FIX_PATH
                             except Exception as e:
                                 log_message(f"⚠️ [ERROR] Failed to extract zip: {e}")
                         else:
@@ -480,10 +504,10 @@ def download_latest_gmod_cef_fix():
             zip_asset = None
             for asset in assets:
                 name = asset.get("name", "")
-                if name.lower().endswith(".exe") and "GModCEFCodecFix" in name:
+                if name.lower().endswith(".exe") and "gmodcefcodecfix" in name.lower():
                     exe_asset = asset
                     break
-                elif name.lower().endswith(".zip") and "GModCEFCodecFix" in name:
+                elif name.lower().endswith(".zip") and "gmodcefcodecfix" in name.lower():
                     zip_asset = asset
             if exe_asset:
                 url = exe_asset.get("browser_download_url")
@@ -509,18 +533,9 @@ def download_latest_gmod_cef_fix():
                         f.write(r.content)
                     extract_dir = os.path.join(download_dir, "GModCEFCodecFix_extracted")
                     os.makedirs(extract_dir, exist_ok=True)
-                    try:
-                        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                            zip_ref.extractall(extract_dir)
-                        for f in os.listdir(extract_dir):
-                            if f.lower().endswith(".exe") and "GModCEFCodecFix" in f:
-                                GMOD_CEF_FIX_PATH = os.path.join(extract_dir, f)
-                                os.chmod(GMOD_CEF_FIX_PATH, 0o755)
-                                log_message("✅ [INFO] Downloaded and extracted GModCEFCodecFix Windows exe from zip.")
-                                return
-                        log_message("⚠️ [ERROR] No executable found in the extracted zip.")
-                    except Exception as e:
-                        log_message(f"⚠️ [ERROR] Failed to extract zip: {e}")
+                    # CHANGED: Use the new extraction function instead of manual extraction.
+                    extract_gmod_cef_fix(zip_path, extract_dir)
+                    return
                 else:
                     log_message("⚠️ [ERROR] Failed to download the zip asset.")
             else:
@@ -529,7 +544,7 @@ def download_latest_gmod_cef_fix():
             linux_asset = None
             for asset in assets:
                 name = asset.get("name", "")
-                if "linux" in name.lower() and "GModCEFCodecFix" in name:
+                if "linux" in name.lower() and "gmodcefcodecfix" in name.lower():
                     linux_asset = asset
                     break
             if linux_asset:
