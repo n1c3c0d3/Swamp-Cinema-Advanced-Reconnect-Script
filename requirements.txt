@@ -1,2 +1,2 @@
-requests
-pexpect
+requests==2.32.3
+pexpect==4.9.0
