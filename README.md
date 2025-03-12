@@ -14,7 +14,7 @@ As long as the script is running, it will check the following information and co
 - If you disconnect from the gameserver, it will keep trying to loop the above.
 
 ## How to Install
-Download the latest release for your operating system under Releases or use the links below for the latest release binaries.
+Download the latest release for your operating system under Releases or use the links below for the latest release binaries.  
 ~~- [Download for Windows](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/releases/download/v1.0-alpha/swamp_reconnect.exe)~~ Not ready WIP  
 ~~- [Download for Linux](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/releases/download/v1.0-alpha/swamp_reconnect.Linux)~~ Not ready WIP  
 
