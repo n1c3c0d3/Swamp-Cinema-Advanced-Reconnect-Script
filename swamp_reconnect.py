@@ -277,7 +277,7 @@ def check_udp_traffic(ip, retries=MAX_RETRIES):
             time.sleep(2)
         return False
 
-# Update state variables and log changes when the state differs
+# Update state variables and log a message when the state changes
 def log_state_change(state_variable, new_state, message):
     global last_gmod_state, last_connection_state
     if state_variable == "gmod":
@@ -461,7 +461,12 @@ def run_gmod_cef_fix():
             return False
     try:
         if os.name == 'nt':
-            child = pexpect.popen_spawn.PopenSpawn(GMOD_CEF_FIX_PATH, timeout=180)
+            try:
+                from pexpect.popen_spawn import PopenSpawn
+            except Exception as e:
+                log_message(f"⚠️ [ERROR] Failed to import PopenSpawn from pexpect.popen_spawn: {e}")
+                return False
+            child = PopenSpawn(GMOD_CEF_FIX_PATH, timeout=180)
         else:
             cmd = shlex.quote(GMOD_CEF_FIX_PATH)
             child = pexpect.spawn("/bin/bash", ["-c", cmd], timeout=180)
@@ -469,7 +474,7 @@ def run_gmod_cef_fix():
         # Wait for the patcher's success message
         child.expect("CEFCodecFix applied successfully!", timeout=180)
         try:
-            child.expect("Do you want to Launch Garry's Mod now\\?", timeout=30)
+            child.expect("Please enter the option number", timeout=30)
             child.sendline("n")
         except pexpect.TIMEOUT:
             debug_log("No launch prompt received; continuing without sending input.")
