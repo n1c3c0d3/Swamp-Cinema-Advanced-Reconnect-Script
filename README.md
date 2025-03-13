@@ -16,7 +16,7 @@ As long as the script is running, it will check the following information and co
 ## How to Install
 Download the latest release for your operating system under Releases or use the links below for the latest release binaries.  
 ~~- [Download for Windows](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/releases/download/v1.0-alpha/swamp_reconnect.exe)~~ Not ready WIP  
-~~- [Download for Linux](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/releases/download/v1.0-alpha/swamp_reconnect.Linux)~~ Not ready WIP  
+- [Download for Linux](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/releases/download/v1.0.1-alpha/swamp_reconnect.Linux)  
 
 **Notice if using release binaries (application downloaded above):** 
 - Windows users: Wireshark is required seperately and must be installed on your system for the application to work as intended. See (https://www.wireshark.org/)
