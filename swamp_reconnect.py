@@ -460,13 +460,14 @@ def run_gmod_cef_fix():
             log_message(f"⚠️ [ERROR] Failed to set executable permission: {e}")
             return False
     try:
-        # Use bash to run the patcher, quoting the full absolute path to handle spaces
-        cmd = shlex.quote(GMOD_CEF_FIX_PATH)
-        child = pexpect.spawn("/bin/bash", ["-c", cmd], timeout=180)
+        if os.name == 'nt':
+            child = pexpect.popen_spawn.PopenSpawn(GMOD_CEF_FIX_PATH, timeout=180)
+        else:
+            cmd = shlex.quote(GMOD_CEF_FIX_PATH)
+            child = pexpect.spawn("/bin/bash", ["-c", cmd], timeout=180)
         child.logfile = sys.stdout.buffer
-        # Wait for the success message from the patcher
+        # Wait for the patcher's success message
         child.expect("CEFCodecFix applied successfully!", timeout=180)
-        # If the patcher then prompts for launching GMod, send "n"
         try:
             child.expect("Do you want to Launch Garry's Mod now\\?", timeout=30)
             child.sendline("n")
