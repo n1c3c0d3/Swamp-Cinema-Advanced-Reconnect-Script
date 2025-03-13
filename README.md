@@ -85,6 +85,6 @@ If significant changes or improvements are made, I will add new versions of the 
 For experienced users, it is recommended to use the scripts for easier debugging if it does not run as intended.  
 
 ## Licensing  
-### Scars is released under the [GNU License](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/blob/main/LICENSE)  
+### SCARS is released under the [GNU License](https://github.com/n1c3c0d3/Swamp-Cinema-Advanced-Reconnect-Script/blob/main/LICENSE)  
 This project is open source and provided free of charge for the Garry's Mod community.  
 
