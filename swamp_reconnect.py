@@ -9,21 +9,26 @@ import pexpect
 import shutil
 import sys
 import zipfile
+import shlex
 
-DEBUG = False  # Set to True for verbose debugging
+DEBUG = False  # Enable debug output
 
+# Print debug messages if DEBUG is True
 def debug_log(msg):
     if DEBUG:
         print(f"DEBUG: {msg}")
 
-SWAMP_URL = "https://swamp.sv/"  # Site to get current server IP
-CHECK_DURATION = 5               # Seconds to monitor traffic (time-based capture)
-MAX_RETRIES = 3                  # Max retries for detection
-CHECK_INTERVAL = 5               # Time between each connection check (in seconds)
-FAILED_ATTEMPTS_THRESHOLD = 3    # Connection failures before validation
+# URL for retrieving the current server IP
+SWAMP_URL = "https://swamp.sv/"
+
+# Configuration constants
+CHECK_DURATION = 5               # Duration for traffic capture (seconds)
+MAX_RETRIES = 3                  # Maximum retry attempts for capturing UDP traffic
+CHECK_INTERVAL = 5               # Time interval between checks (seconds)
+FAILED_ATTEMPTS_THRESHOLD = 3    # Number of failed launch attempts before validation
 MIN_PACKET_THRESHOLD = 5         # Minimum packets to consider traffic active
 
-# OS-specific settings
+# OS-specific settings for Steam URIs, process names, and required commands
 if os.name == 'nt':
     GMOD_STEAM_URI = "steam://connect/{server_ip}:27015"
     GMOD_VALIDATE_URI = "steam://validate/4000"
@@ -35,15 +40,20 @@ else:
     PROCESS_NAMES = ["gmod", "hl2_linux", "hl2.sh", "garrysmod"]
     REQUIRED_CMDS = ["tcpdump", "pgrep", "xdg-open"]
 
-# Global variable for the GModCEFCodecFix executable path.
-GMOD_CEF_FIX_PATH = ""
+# Global variable to store the full path to the CEF patch executable
+GMOD_CEF_FIX_PATH = None
 
-# This function extracts the zip and recursively searches for the executable
+# Extract the patch from a zip file and set GMOD_CEF_FIX_PATH
 def extract_gmod_cef_fix(zip_path, extract_to):
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(extract_to)
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_to)
+    except Exception as e:
+        log_message(f"⚠️ [ERROR] Failed to extract zip file: {e}")
+        return None
     gmod_cef_exe = None
     gmod_cef_folder = None
+    # Recursively search for the executable inside the extracted files
     for root, dirs, files in os.walk(extract_to):
         for file in files:
             if file.lower().endswith(".exe") and "gmodcefcodecfix" in file.lower():
@@ -53,32 +63,39 @@ def extract_gmod_cef_fix(zip_path, extract_to):
         if gmod_cef_exe:
             break
     if gmod_cef_exe and gmod_cef_folder:
-        # Copy the entire folder (with the exe and dependencies) to a new destination
         dest_folder = os.path.join(os.path.dirname(zip_path), "GModCEFCodecFix")
         if os.path.exists(dest_folder):
             shutil.rmtree(dest_folder)
-        shutil.copytree(gmod_cef_folder, dest_folder)
-        # Update executable path to point inside the new folder
+        try:
+            shutil.copytree(gmod_cef_folder, dest_folder)
+        except Exception as e:
+            log_message(f"⚠️ [ERROR] Failed to copy extracted folder: {e}")
+            return None
         exe_name = os.path.basename(gmod_cef_exe)
         global GMOD_CEF_FIX_PATH
         GMOD_CEF_FIX_PATH = os.path.join(dest_folder, exe_name)
-        os.chmod(GMOD_CEF_FIX_PATH, 0o755)
+        try:
+            os.chmod(GMOD_CEF_FIX_PATH, 0o755)  # Ensure the file is executable
+        except Exception as e:
+            log_message(f"⚠️ [ERROR] Failed to set executable permission: {e}")
         log_message(f"✅ [INFO] Extracted GModCEFCodecFix to: {dest_folder}")
         return dest_folder
     else:
         log_message("⚠️ [ERROR] No executable found in the extracted zip.")
         return None
 
-# STATE TRACKING
+# State tracking variables
 last_gmod_state = None
 last_connection_state = None
-failed_attempts = 0   # For connection failures (GMod running but not connected)
-crash_attempts = 0    # For launch failures (GMod not running, assumed crash)
+failed_attempts = 0
+crash_attempts = 0
 server_ip = None
 
+# Simple logging function with a timestamp
 def log_message(message):
     print(f"{time.strftime('%Y-%m-%d %I:%M:%S %p')} {message}")
 
+# Verify that required system commands are available
 def check_dependencies():
     missing = []
     for cmd in REQUIRED_CMDS:
@@ -90,24 +107,27 @@ def check_dependencies():
     else:
         log_message("✅ [INFO] All required system commands are available.")
 
+# Retrieve the current server IP from the SWAMP_URL
 def fetch_server_ip():
     global server_ip
     try:
         response = requests.get(SWAMP_URL, timeout=5)
-        debug_log(f"Fetched server IP page, status code: {response.status_code}")
-        match = re.search(r"steam://connect/(\d+\.\d+\.\d+\.\d+):(\d+)", response.text)
-        if match:
-            new_ip = match.group(1)
-            if new_ip != server_ip:
-                log_message(f"🌍 [INFO] Updated server IP: {new_ip}")
-                server_ip = new_ip
-            else:
-                debug_log("Server IP unchanged.")
-        else:
-            log_message("⚠️ [WARNING] Could not parse server IP from response.")
     except Exception as e:
         log_message(f"⚠️ [ERROR] Failed to fetch server IP: {e}")
+        return
+    debug_log(f"Fetched server IP page, status code: {response.status_code}")
+    match = re.search(r"steam://connect/(\d+\.\d+\.\d+\.\d+):(\d+)", response.text)
+    if match:
+        new_ip = match.group(1)
+        if new_ip != server_ip:
+            log_message(f"🌍 [INFO] Updated server IP: {new_ip}")
+            server_ip = new_ip
+        else:
+            debug_log("Server IP unchanged.")
+    else:
+        log_message("⚠️ [WARNING] Could not parse server IP from response.")
 
+# Check if GMod is running using tasklist (Windows) or pgrep (Linux)
 def is_gmod_running():
     if os.name == 'nt':
         try:
@@ -136,6 +156,7 @@ def is_gmod_running():
             log_message(f"⚠️ [ERROR] Exception in is_gmod_running: {e}")
             return False
 
+# List network interfaces using dumpcap on Windows
 def get_windows_capture_interfaces():
     dumpcap_path = shutil.which("dumpcap")
     if not dumpcap_path:
@@ -154,6 +175,7 @@ def get_windows_capture_interfaces():
         log_message(f"⚠️ [WARNING] Exception in get_windows_capture_interfaces: {e}")
         return []
 
+# Determine an active network interface by testing each candidate with dumpcap
 def find_active_interface(ip):
     dumpcap_path = shutil.which("dumpcap")
     if not dumpcap_path:
@@ -166,7 +188,6 @@ def find_active_interface(ip):
         if match_iface:
             candidate_ifaces.append(match_iface.group(1))
     debug_log(f"Candidate interfaces: {candidate_ifaces}")
-    
     filter_str = f"host {ip}"
     for iface in candidate_ifaces:
         temp_file = "temp_test.pcap"
@@ -197,10 +218,10 @@ def find_active_interface(ip):
     log_message("⚠️ [WARNING] No active interface detected; defaulting to interface 1.")
     return "1"
 
+# Check for UDP traffic from a given IP using dumpcap (Windows) or tcpdump (Linux)
 def check_udp_traffic(ip, retries=MAX_RETRIES):
     if not ip:
         return False
-
     if os.name == 'nt':
         dumpcap_path = shutil.which("dumpcap")
         if not dumpcap_path:
@@ -243,16 +264,20 @@ def check_udp_traffic(ip, retries=MAX_RETRIES):
                 "host", ip
             ]
             debug_log(f"Attempt {attempt+1}: Running command: {cmd}")
-            result = subprocess.run(cmd,
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL,
-                                    text=True)
-            debug_log(f"tcpdump result: {result.stdout.strip()}")
-            if result.returncode == 0 and ip in result.stdout:
-                return True
+            try:
+                result = subprocess.run(cmd,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.DEVNULL,
+                                        text=True)
+                debug_log(f"tcpdump result: {result.stdout.strip()}")
+                if result.returncode == 0 and ip in result.stdout:
+                    return True
+            except Exception as e:
+                debug_log(f"Error running tcpdump: {e}")
             time.sleep(2)
         return False
 
+# Update state variables and log changes when the state differs
 def log_state_change(state_variable, new_state, message):
     global last_gmod_state, last_connection_state
     if state_variable == "gmod":
@@ -264,6 +289,7 @@ def log_state_change(state_variable, new_state, message):
             log_message(message)
             last_connection_state = new_state
 
+# Launch GMod using the appropriate Steam URI
 def launch_gmod():
     global failed_attempts, crash_attempts, server_ip
     if server_ip:
@@ -283,6 +309,7 @@ def launch_gmod():
     else:
         log_message("⚠️ [ERROR] No valid server IP. Cannot launch GMod.")
 
+# Restart GMod and trigger file validation, then wait for full validation before patching
 def validate_and_restart_gmod():
     global failed_attempts, crash_attempts
     log_message("🔄 [INFO] Restarting GMod & verifying game files...")
@@ -305,36 +332,47 @@ def validate_and_restart_gmod():
                        stderr=subprocess.DEVNULL)
     failed_attempts = 0
     crash_attempts = 0
-    time.sleep(15)
+    time.sleep(45)  # Wait to ensure Steam has fully validated files
     if not run_gmod_cef_fix():
         log_message("⚠️ [ERROR] GModCEFCodecFix did not apply successfully after validation.")
 
+# Check GitHub for a newer version of the patch and update if needed
 def check_for_new_cef_fix():
+    global GMOD_CEF_FIX_PATH
     try:
         response = requests.get("https://api.github.com/repos/solsticegamestudios/GModCEFCodecFix/releases/latest", timeout=10)
-        debug_log(f"GitHub release status: {response.status_code}")
-        if response.status_code != 200:
-            log_message("⚠️ [ERROR] Failed to fetch release info from GitHub.")
-            return
-        data = response.json()
-        remote_created_at_str = data.get("created_at", None)
-        if not remote_created_at_str:
-            log_message("⚠️ [ERROR] Remote release info did not contain a creation date.")
-            return
-        remote_date = datetime.strptime(remote_created_at_str, "%Y-%m-%dT%H:%M:%SZ")
-        debug_log(f"Remote patch creation date: {remote_date}")
     except Exception as e:
         log_message(f"⚠️ [ERROR] Exception while fetching remote release info: {e}")
         return
-
-    if not os.path.exists(GMOD_CEF_FIX_PATH):
+    debug_log(f"GitHub release status: {response.status_code}")
+    if response.status_code != 200:
+        log_message("⚠️ [ERROR] Failed to fetch release info from GitHub.")
+        return
+    try:
+        data = response.json()
+    except Exception as e:
+        log_message(f"⚠️ [ERROR] Failed to parse JSON from GitHub response: {e}")
+        return
+    remote_created_at_str = data.get("created_at", None)
+    if not remote_created_at_str:
+        log_message("⚠️ [ERROR] Remote release info did not contain a creation date.")
+        return
+    try:
+        remote_date = datetime.strptime(remote_created_at_str, "%Y-%m-%dT%H:%M:%SZ")
+    except Exception as e:
+        log_message(f"⚠️ [ERROR] Failed to parse remote date: {e}")
+        return
+    debug_log(f"Remote patch creation date: {remote_date}")
+    if not GMOD_CEF_FIX_PATH or not os.path.exists(GMOD_CEF_FIX_PATH):
         log_message(f"⚠️ [WARNING] Local patch file not found at {GMOD_CEF_FIX_PATH}.")
         return
-
-    local_timestamp = os.path.getmtime(GMOD_CEF_FIX_PATH)
-    local_date = datetime.fromtimestamp(local_timestamp)
+    try:
+        local_timestamp = os.path.getmtime(GMOD_CEF_FIX_PATH)
+        local_date = datetime.fromtimestamp(local_timestamp)
+    except Exception as e:
+        log_message(f"⚠️ [ERROR] Could not get modification time for local patch: {e}")
+        return
     debug_log(f"Local patch file modification date: {local_date}")
-
     if remote_date > local_date:
         log_message(f"🌍 [INFO] New patch available (remote: {remote_date}, local: {local_date}). Updating...")
         if os.name == 'nt':
@@ -366,13 +404,13 @@ def check_for_new_cef_fix():
                             f.write(r.content)
                         os.chmod(exe_path, 0o755)
                         GMOD_CEF_FIX_PATH = exe_path
-                        log_message("✅ [INFO] Updated GModCEFCodecFix to the latest version.")
+                        log_message("✅ [INFO] Updated GModCEFCodecFix to the latest patch.")
                     else:
-                        log_message("⚠️ [ERROR] Failed to download the asset from GitHub.")
+                        log_message("⚠️ [ERROR] Failed to download the patch from GitHub.")
                 except Exception as e:
                     log_message(f"⚠️ [ERROR] Exception while downloading new patch: {e}")
             else:
-                log_message("⚠️ [ERROR] No suitable Windows asset found in the latest release.")
+                log_message("⚠️ [ERROR] No suitable Windows patch found in the latest release.")
         else:
             asset_url = None
             try:
@@ -396,22 +434,22 @@ def check_for_new_cef_fix():
                             f.write(r.content)
                         os.chmod(linux_path, 0o755)
                         GMOD_CEF_FIX_PATH = linux_path
-                        log_message("✅ [INFO] Updated GModCEFCodecFix for Linux.")
+                        log_message("✅ [INFO] Updated GModCEFCodecFix for Linux to the latest patch.")
                         return
                     else:
-                        log_message("⚠️ [ERROR] Failed to download the Linux asset.")
+                        log_message("⚠️ [ERROR] Failed to download the Linux patch from GitHub.")
                 except Exception as e:
                     log_message(f"⚠️ [ERROR] Exception while downloading new patch: {e}")
             else:
-                log_message("⚠️ [ERROR] No suitable Linux asset found in the latest release.")
+                log_message("⚠️ [ERROR] No suitable Linux patch found in the latest release.")
     else:
         log_message(f"✅ [INFO] Local patch is up-to-date (remote: {remote_date}, local: {local_date}).")
 
+# Run the CEF patch using pexpect inside a bash shell to capture output and send responses automatically.
 def run_gmod_cef_fix():
     log_message("🛠 [INFO] Running GModCEFCodecFix with pexpect...")
     check_for_new_cef_fix()
-
-    if not os.path.exists(GMOD_CEF_FIX_PATH):
+    if not GMOD_CEF_FIX_PATH or not os.path.exists(GMOD_CEF_FIX_PATH):
         log_message(f"⚠️ [ERROR] GModCEFCodecFix not found at {GMOD_CEF_FIX_PATH}")
         return False
     if not os.access(GMOD_CEF_FIX_PATH, os.X_OK):
@@ -421,15 +459,19 @@ def run_gmod_cef_fix():
         except Exception as e:
             log_message(f"⚠️ [ERROR] Failed to set executable permission: {e}")
             return False
-
     try:
-        if os.name == 'nt':
-            child = pexpect.popen_spawn.PopenSpawn(GMOD_CEF_FIX_PATH, timeout=120)
-        else:
-            child = pexpect.spawn(GMOD_CEF_FIX_PATH, timeout=120)
-        child.sendline("n")
-        child.sendline("")
-        child.expect("CEFCodecFix applied successfully!", timeout=120)
+        # Use bash to run the patcher, quoting the full absolute path to handle spaces
+        cmd = shlex.quote(GMOD_CEF_FIX_PATH)
+        child = pexpect.spawn("/bin/bash", ["-c", cmd], timeout=180)
+        child.logfile = sys.stdout.buffer
+        # Wait for the success message from the patcher
+        child.expect("CEFCodecFix applied successfully!", timeout=180)
+        # If the patcher then prompts for launching GMod, send "n"
+        try:
+            child.expect("Do you want to Launch Garry's Mod now\\?", timeout=30)
+            child.sendline("n")
+        except pexpect.TIMEOUT:
+            debug_log("No launch prompt received; continuing without sending input.")
         output = child.before.decode() if hasattr(child.before, "decode") else child.before
         ansi_escape = re.compile(r'\x1B[@-_][0-?]*[ -/]*[@-~]')
         cleaned_output = ansi_escape.sub('', output)
@@ -443,11 +485,8 @@ def run_gmod_cef_fix():
         log_message(f"⚠️ [ERROR] Exception in pexpect patch run: {e}")
         return False
 
+# Search common directories for the patch; download it if not found
 def auto_configure_gmod_cef_path():
-    """
-    Searches the user's Documents, Desktop, and Downloads folders for the GModCEFCodecFix file.
-    If not found, downloads the latest release.
-    """
     global GMOD_CEF_FIX_PATH
     search_dirs = []
     home = os.path.expanduser("~")
@@ -455,12 +494,10 @@ def auto_configure_gmod_cef_path():
         dir_path = os.path.join(home, folder)
         if os.path.isdir(dir_path):
             search_dirs.append(dir_path)
-    
     if os.name == 'nt':
         patterns = [("GModCEFCodecFix", ".exe"), ("GModCEFCodecFix", ".zip")]
     else:
         patterns = [("GModCEFCodecFix-Linux", "")]
-    
     for d in search_dirs:
         for root, _, files in os.walk(d):
             for file in files:
@@ -479,124 +516,143 @@ def auto_configure_gmod_cef_path():
                             GMOD_CEF_FIX_PATH = candidate
                             log_message(f"Found GModCEFCodecFix at: {GMOD_CEF_FIX_PATH}")
                             return GMOD_CEF_FIX_PATH
-    log_message("GModCEFCodecFix not found in common directories. Downloading latest release...")
+    log_message("GModCEFCodecFix not found in common directories. Downloading latest patch...")
     download_latest_gmod_cef_fix()
     return GMOD_CEF_FIX_PATH
 
+# Download the latest patch from GitHub if not available locally
 def download_latest_gmod_cef_fix():
-    """
-    Downloads the latest GModCEFCodecFix release from GitHub dynamically.
-    For Windows, it tries to find an .exe asset first; if not, falls back to a .zip asset.
-    For Linux, it downloads the asset with 'linux' in its name.
-    The file is saved in the same directory as the script.
-    """
     global GMOD_CEF_FIX_PATH
     download_dir = os.path.dirname(os.path.realpath(__file__))
     try:
         response = requests.get("https://api.github.com/repos/solsticegamestudios/GModCEFCodecFix/releases/latest", timeout=10)
-        if response.status_code != 200:
-            log_message("⚠️ [ERROR] Failed to fetch release info from GitHub.")
-            return
-        data = response.json()
-        assets = data.get("assets", [])
-        if os.name == 'nt':
-            exe_asset = None
-            zip_asset = None
-            for asset in assets:
-                name = asset.get("name", "")
-                if name.lower().endswith(".exe") and "gmodcefcodecfix" in name.lower():
-                    exe_asset = asset
-                    break
-                elif name.lower().endswith(".zip") and "gmodcefcodecfix" in name.lower():
-                    zip_asset = asset
-            if exe_asset:
-                url = exe_asset.get("browser_download_url")
-                exe_path = os.path.join(download_dir, exe_asset.get("name"))
-                log_message(f"Downloading Windows executable from: {url}")
-                r = requests.get(url, timeout=10)
-                if r.status_code == 200:
-                    with open(exe_path, "wb") as f:
-                        f.write(r.content)
-                    os.chmod(exe_path, 0o755)
-                    GMOD_CEF_FIX_PATH = exe_path
-                    log_message("✅ [INFO] Downloaded GModCEFCodecFix Windows exe.")
-                    return
-                else:
-                    log_message("⚠️ [ERROR] Failed to download the exe asset.")
-            elif zip_asset:
-                url = zip_asset.get("browser_download_url")
-                zip_path = os.path.join(download_dir, zip_asset.get("name"))
-                log_message(f"Downloading Windows zip from: {url}")
-                r = requests.get(url, timeout=10)
-                if r.status_code == 200:
-                    with open(zip_path, "wb") as f:
-                        f.write(r.content)
-                    extract_dir = os.path.join(download_dir, "GModCEFCodecFix_extracted")
-                    os.makedirs(extract_dir, exist_ok=True)
-                    # CHANGED: Use the new extraction function instead of manual extraction.
-                    extract_gmod_cef_fix(zip_path, extract_dir)
-                    return
-                else:
-                    log_message("⚠️ [ERROR] Failed to download the zip asset.")
-            else:
-                log_message("⚠️ [ERROR] No suitable Windows asset found in the latest release.")
-        else:
-            linux_asset = None
-            for asset in assets:
-                name = asset.get("name", "")
-                if "linux" in name.lower() and "gmodcefcodecfix" in name.lower():
-                    linux_asset = asset
-                    break
-            if linux_asset:
-                url = linux_asset.get("browser_download_url")
-                linux_path = os.path.join(download_dir, linux_asset.get("name"))
-                log_message(f"Downloading Linux asset from: {url}")
-                r = requests.get(url, timeout=10)
-                if r.status_code == 200:
-                    with open(linux_path, "wb") as f:
-                        f.write(r.content)
-                    os.chmod(linux_path, 0o755)
-                    GMOD_CEF_FIX_PATH = linux_path
-                    log_message("✅ [INFO] Downloaded GModCEFCodecFix for Linux.")
-                    return
-                else:
-                    log_message("⚠️ [ERROR] Failed to download the Linux asset.")
-            else:
-                log_message("⚠️ [ERROR] No suitable Linux asset found in the latest release.")
     except Exception as e:
-        log_message(f"⚠️ [ERROR] Exception while downloading latest patch: {e}")
+        log_message(f"⚠️ [ERROR] Exception while fetching release info from GitHub: {e}")
+        return
+    if response.status_code != 200:
+        log_message("⚠️ [ERROR] Failed to fetch release info from GitHub.")
+        return
+    try:
+        data = response.json()
+    except Exception as e:
+        log_message(f"⚠️ [ERROR] Failed to parse GitHub JSON response: {e}")
+        return
+    assets = data.get("assets", [])
+    if os.name == 'nt':
+        exe_asset = None
+        zip_asset = None
+        for asset in assets:
+            name = asset.get("name", "")
+            if name.lower().endswith(".exe") and "gmodcefcodecfix" in name.lower():
+                exe_asset = asset
+                break
+            elif name.lower().endswith(".zip") and "gmodcefcodecfix" in name.lower():
+                zip_asset = asset
+        if exe_asset:
+            url = exe_asset.get("browser_download_url")
+            exe_path = os.path.join(download_dir, exe_asset.get("name"))
+            log_message(f"Downloading latest patch (Windows) from: {url}")
+            try:
+                r = requests.get(url, timeout=10)
+            except Exception as e:
+                log_message(f"⚠️ [ERROR] Exception while downloading executable: {e}")
+                return
+            if r.status_code == 200:
+                with open(exe_path, "wb") as f:
+                    f.write(r.content)
+                try:
+                    os.chmod(exe_path, 0o755)
+                except Exception as e:
+                    log_message(f"⚠️ [ERROR] Failed to set executable permission: {e}")
+                GMOD_CEF_FIX_PATH = exe_path
+                log_message("✅ [INFO] Downloaded latest patch (Windows).")
+                return
+            else:
+                log_message("⚠️ [ERROR] Failed to download the executable patch.")
+        elif zip_asset:
+            url = zip_asset.get("browser_download_url")
+            zip_path = os.path.join(download_dir, zip_asset.get("name"))
+            log_message(f"Downloading latest patch (Windows) from: {url}")
+            try:
+                r = requests.get(url, timeout=10)
+            except Exception as e:
+                log_message(f"⚠️ [ERROR] Exception while downloading zip asset: {e}")
+                return
+            if r.status_code == 200:
+                with open(zip_path, "wb") as f:
+                    f.write(r.content)
+                extract_dir = os.path.join(download_dir, "GModCEFCodecFix_extracted")
+                os.makedirs(extract_dir, exist_ok=True)
+                extract_gmod_cef_fix(zip_path, extract_dir)
+                return
+            else:
+                log_message("⚠️ [ERROR] Failed to download the zip patch.")
+        else:
+            log_message("⚠️ [ERROR] No suitable Windows patch found in the latest release.")
+    else:
+        linux_asset = None
+        for asset in assets:
+            name = asset.get("name", "")
+            if "linux" in name.lower() and "gmodcefcodecfix" in name.lower():
+                linux_asset = asset
+                break
+        if linux_asset:
+            url = linux_asset.get("browser_download_url")
+            linux_path = os.path.join(download_dir, linux_asset.get("name"))
+            log_message(f"Downloading latest patch (Linux) from: {url}")
+            try:
+                r = requests.get(url, timeout=10)
+            except Exception as e:
+                log_message(f"⚠️ [ERROR] Exception while downloading Linux asset: {e}")
+                return
+            if r.status_code == 200:
+                with open(linux_path, "wb") as f:
+                    f.write(r.content)
+                try:
+                    os.chmod(linux_path, 0o755)
+                except Exception as e:
+                    log_message(f"⚠️ [ERROR] Failed to set executable permission: {e}")
+                GMOD_CEF_FIX_PATH = linux_path
+                log_message("✅ [INFO] Downloaded latest patch (Linux).")
+                return
+            else:
+                log_message("⚠️ [ERROR] Failed to download the Linux patch.")
+        else:
+            log_message("⚠️ [ERROR] No suitable Linux patch found in the latest release.")
 
+# Main loop: continuously check server status and apply patch as needed.
+# This loop will never exit unless the user manually terminates the script.
 def main():
     global server_ip, failed_attempts, crash_attempts
     auto_configure_gmod_cef_path()
     check_dependencies()
-    
     while True:
-        fetch_server_ip()
-        gmod_running = is_gmod_running()
-        udp_active = check_udp_traffic(server_ip) if server_ip else False
-
-        debug_log(f"Server IP: {server_ip}, GMod running: {gmod_running}, Traffic detected: {udp_active}")
-        
-        if gmod_running and udp_active:
-            log_state_change("gmod", True, "🟢 [INFO] GMod is running & connected to the server.")
-            failed_attempts = 0
-            crash_attempts = 0
-        elif not gmod_running:
-            log_state_change("gmod", False, "❌ [INFO] GMod is NOT running. Attempting to launch...")
-            crash_attempts += 1
-            launch_gmod()
-            if crash_attempts >= 3:
-                log_message("⚠️ [INFO] 3 consecutive failed launches detected. Validating and reapplying CEF patch...")
-                validate_and_restart_gmod()
+        try:
+            fetch_server_ip()
+            gmod_running = is_gmod_running()
+            udp_active = check_udp_traffic(server_ip) if server_ip else False
+            debug_log(f"Server IP: {server_ip}, GMod running: {gmod_running}, Traffic detected: {udp_active}")
+            if gmod_running and udp_active:
+                log_state_change("gmod", True, "🟢 [INFO] GMod is running & connected to the server.")
+                failed_attempts = 0
                 crash_attempts = 0
-        else:
-            log_state_change("connection", False, "🔴 [INFO] GMod is running but NOT connected.")
-            failed_attempts += 1
-            if failed_attempts >= FAILED_ATTEMPTS_THRESHOLD:
-                validate_and_restart_gmod()
-
-        time.sleep(CHECK_INTERVAL)
+            elif not gmod_running:
+                log_state_change("gmod", False, "❌ [INFO] GMod is NOT running. Attempting to launch...")
+                crash_attempts += 1
+                launch_gmod()
+                if crash_attempts >= 3:
+                    log_message("⚠️ [INFO] 3 consecutive failed launches detected. Validating and reapplying patch...")
+                    validate_and_restart_gmod()
+                    crash_attempts = 0
+            else:
+                log_state_change("connection", False, "🔴 [INFO] GMod is running but NOT connected.")
+                failed_attempts += 1
+                if failed_attempts >= FAILED_ATTEMPTS_THRESHOLD:
+                    validate_and_restart_gmod()
+            time.sleep(CHECK_INTERVAL)
+        except Exception as e:
+            log_message(f"⚠️ [ERROR] Uncaught exception in main loop: {e}")
+            time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
     main()
