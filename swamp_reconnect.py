@@ -24,9 +24,13 @@ SWAMP_URL = "https://swamp.sv/"
 # Configuration constants
 CHECK_DURATION = 5               # Duration for traffic capture (seconds)
 MAX_RETRIES = 3                  # Maximum retry attempts for capturing UDP traffic
-CHECK_INTERVAL = 5               # Time interval between checks (seconds)
+CHECK_INTERVAL = 10              # Time interval between main loop checks (seconds)
 FAILED_ATTEMPTS_THRESHOLD = 3    # Number of failed launch attempts before validation
 MIN_PACKET_THRESHOLD = 5         # Minimum packets to consider traffic active
+
+# Caching for server IP fetch
+FETCH_INTERVAL_SECONDS = 60      # Only fetch IP at most once per 60 seconds
+last_fetch_time = 0              # Timestamp of the last fetch
 
 # OS-specific settings for Steam URIs, process names, and required commands
 if os.name == 'nt':
@@ -109,9 +113,20 @@ def check_dependencies():
 
 # Retrieve the current server IP from the SWAMP_URL
 def fetch_server_ip():
-    global server_ip
+    global server_ip, last_fetch_time
+    current_time = time.time()
+    if current_time - last_fetch_time < FETCH_INTERVAL_SECONDS:
+        debug_log("Skipping server IP fetch; interval not reached.")
+        return
+    last_fetch_time = current_time
+
+    headers = {
+        'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                       'AppleWebKit/537.36 (KHTML, like Gecko) '
+                       'Chrome/115.0.0.0 Safari/537.36')
+    }
     try:
-        response = requests.get(SWAMP_URL, timeout=5)
+        response = requests.get(SWAMP_URL, timeout=5, headers=headers)
     except Exception as e:
         log_message(f"⚠️ [ERROR] Failed to fetch server IP: {e}")
         return
@@ -277,7 +292,7 @@ def check_udp_traffic(ip, retries=MAX_RETRIES):
             time.sleep(2)
         return False
 
-# Update state variables and log a message when the state changes
+# Update state variables and log changes when the state differs
 def log_state_change(state_variable, new_state, message):
     global last_gmod_state, last_connection_state
     if state_variable == "gmod":
@@ -460,21 +475,15 @@ def run_gmod_cef_fix():
             log_message(f"⚠️ [ERROR] Failed to set executable permission: {e}")
             return False
     try:
-        if os.name == 'nt':
-            try:
-                from pexpect.popen_spawn import PopenSpawn
-            except Exception as e:
-                log_message(f"⚠️ [ERROR] Failed to import PopenSpawn from pexpect.popen_spawn: {e}")
-                return False
-            child = PopenSpawn(GMOD_CEF_FIX_PATH, timeout=180)
-        else:
-            cmd = shlex.quote(GMOD_CEF_FIX_PATH)
-            child = pexpect.spawn("/bin/bash", ["-c", cmd], timeout=180)
+        # Use bash to run the patcher, quoting the full absolute path to handle spaces
+        cmd = shlex.quote(GMOD_CEF_FIX_PATH)
+        child = pexpect.spawn("/bin/bash", ["-c", cmd], timeout=180)
         child.logfile = sys.stdout.buffer
-        # Wait for the patcher's success message
+        # Wait for the success message from the patcher
         child.expect("CEFCodecFix applied successfully!", timeout=180)
+        # If the patcher then prompts for launching GMod, send "n"
         try:
-            child.expect("Please enter the option number", timeout=30)
+            child.expect("Do you want to Launch Garry's Mod now\\?", timeout=30)
             child.sendline("n")
         except pexpect.TIMEOUT:
             debug_log("No launch prompt received; continuing without sending input.")
@@ -627,17 +636,21 @@ def download_latest_gmod_cef_fix():
             log_message("⚠️ [ERROR] No suitable Linux patch found in the latest release.")
 
 # Main loop: continuously check server status and apply patch as needed.
-# This loop will never exit unless the user manually terminates the script.
+# This loop will only fetch the server IP if GMod is not connected.
 def main():
     global server_ip, failed_attempts, crash_attempts
     auto_configure_gmod_cef_path()
     check_dependencies()
     while True:
         try:
-            fetch_server_ip()
             gmod_running = is_gmod_running()
             udp_active = check_udp_traffic(server_ip) if server_ip else False
             debug_log(f"Server IP: {server_ip}, GMod running: {gmod_running}, Traffic detected: {udp_active}")
+
+            # Only fetch the server IP if GMod is not connected (either not running or no UDP traffic)
+            if not (gmod_running and udp_active):
+                fetch_server_ip()
+
             if gmod_running and udp_active:
                 log_state_change("gmod", True, "🟢 [INFO] GMod is running & connected to the server.")
                 failed_attempts = 0
@@ -655,6 +668,7 @@ def main():
                 failed_attempts += 1
                 if failed_attempts >= FAILED_ATTEMPTS_THRESHOLD:
                     validate_and_restart_gmod()
+
             time.sleep(CHECK_INTERVAL)
         except Exception as e:
             log_message(f"⚠️ [ERROR] Uncaught exception in main loop: {e}")
