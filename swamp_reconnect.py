@@ -32,6 +32,19 @@ MIN_PACKET_THRESHOLD = 5         # Minimum packets to consider traffic active
 FETCH_INTERVAL_SECONDS = 60      # Only fetch IP at most once per 60 seconds
 last_fetch_time = 0              # Timestamp of the last fetch
 
+# Maintain a session with standard browser headers to avoid bot detection
+SESSION = requests.Session()
+SESSION.headers.update({
+    'User-Agent': (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/115.0.0.0 Safari/537.36'
+    ),
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Connection': 'keep-alive',
+})
+
 # OS-specific settings for Steam URIs, process names, and required commands
 if os.name == 'nt':
     GMOD_STEAM_URI = "steam://connect/{server_ip}:27015"
@@ -112,21 +125,17 @@ def check_dependencies():
         log_message("✅ [INFO] All required system commands are available.")
 
 # Retrieve the current server IP from the SWAMP_URL
-def fetch_server_ip():
+def fetch_server_ip(force=False):
     global server_ip, last_fetch_time
     current_time = time.time()
-    if current_time - last_fetch_time < FETCH_INTERVAL_SECONDS:
+    if not force and current_time - last_fetch_time < FETCH_INTERVAL_SECONDS:
         debug_log("Skipping server IP fetch; interval not reached.")
         return
     last_fetch_time = current_time
 
-    headers = {
-        'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                       'AppleWebKit/537.36 (KHTML, like Gecko) '
-                       'Chrome/115.0.0.0 Safari/537.36')
-    }
     try:
-        response = requests.get(SWAMP_URL, timeout=5, headers=headers)
+        response = SESSION.get(SWAMP_URL, timeout=5, headers={'Referer': SWAMP_URL})
+        response.raise_for_status()
     except Exception as e:
         log_message(f"⚠️ [ERROR] Failed to fetch server IP: {e}")
         return
@@ -636,7 +645,7 @@ def download_latest_gmod_patch_tool():
             log_message("⚠️ [ERROR] No suitable Linux patch found in the latest release.")
 
 # Main loop: continuously check server status and apply patch as needed.
-# This loop will only fetch the server IP if GMod is not connected.
+# This loop only re-fetches the server IP after repeated connection failures.
 def main():
     global server_ip, failed_attempts, crash_attempts
     auto_configure_gmod_patch_tool_path()
@@ -644,12 +653,13 @@ def main():
     while True:
         try:
             gmod_running = is_gmod_running()
+
+            # Ensure we have a server IP before checking for UDP traffic
+            if server_ip is None:
+                fetch_server_ip()
+
             udp_active = check_udp_traffic(server_ip) if server_ip else False
             debug_log(f"Server IP: {server_ip}, GMod running: {gmod_running}, Traffic detected: {udp_active}")
-
-            # Only fetch the server IP if GMod is not connected (either not running or no UDP traffic)
-            if not (gmod_running and udp_active):
-                fetch_server_ip()
 
             if gmod_running and udp_active:
                 log_state_change("gmod", True, "🟢 [INFO] GMod is running & connected to the server.")
@@ -667,7 +677,9 @@ def main():
                 log_state_change("connection", False, "🔴 [INFO] GMod is running but NOT connected.")
                 failed_attempts += 1
                 if failed_attempts >= FAILED_ATTEMPTS_THRESHOLD:
+                    fetch_server_ip(force=True)
                     validate_and_restart_gmod()
+                    failed_attempts = 0
 
             time.sleep(CHECK_INTERVAL)
         except Exception as e:
