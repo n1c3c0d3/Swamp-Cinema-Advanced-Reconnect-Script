@@ -1,15 +1,15 @@
 # Swamp-Cinema-Advanced-Reconnect-Script
 A python-based automation script for Windows or Linux users to maintain connection for your Garry's Mod game client. Basically, this should assist in reconnecting to the Swamp Cinema GMOD server indefinitely.
 It features minimal logging, will inform you relevant information for reconnection and warns user of points of failure.
-It also handles automatically running the GMOD CEF FIX patch if the game fails to launch due to game-breaking steam updates.
+It also handles automatically running the [GModPatchTool patch](https://github.com/solsticegamestudios/GModPatchTool/releases/latest) if the game fails to launch due to game-breaking steam updates.
 
 ## How it works
 As long as the script is running, it will check the following information and conditions:
 
 - Checks the gameserver current IP listed on its website, or uses last known IP.
 - Checks if the gameserver is online. If yes, will continue running the rest of the conditions below.
-- Checks if the game is running. If not, will launch and autoconnect at least twice. If it is not able to connect and the server is online, it will try to revalidate the game files and apply the CEF patch.
-- If the CEF patch fails, it will check if there is a newer patch available, attempt to download newer patch, revalidate, and try again. (Work in Progress)
+- Checks if the game is running. If not, will launch and autoconnect at least twice. If it is not able to connect and the server is online, it will try to revalidate the game files and apply the GModPatchTool patch.
+- If the patch fails, it will check if there is a newer patch available, attempt to download newer patch, revalidate, and try again. (Work in Progress)
 - From here, it will keep trying to reconnect as long the gameserver is still online.
 - If you disconnect from the gameserver, it will keep trying to loop the above.
 
@@ -61,7 +61,7 @@ A standard path would be: `C:\Program Files\Wireshark`
 ## Linux Requirements
 - Python 3 (3.6+).
 - Python packages: requests, pexpect
-- GMOD CEF Fix (will download the file automatically to its root location unless you specify a path) *WIP
+- [GModPatchTool](https://github.com/solsticegamestudios/GModPatchTool/releases/latest) (will download the file automatically to its root location unless you specify a path) *WIP
 - Basic linux CLI knowledge
 - Own + have a working Garry's MOD game client installed
 - Have a working internet connection
