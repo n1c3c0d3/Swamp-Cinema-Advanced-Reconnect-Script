@@ -78,8 +78,25 @@ install via `pip install -r requirements.txt`.
 ### Linux Instructions
 To run this script, simply set executable permissions on the file using the chmod command and open in your preferred linux terminal (e.g. gnome, konsole, kitty)
 
+## Building standalone executables
+The project can be bundled with [PyInstaller](https://pyinstaller.org) so you can distribute a single file executable. PyInstaller must be run on the same operating system that you are targeting (Windows builds need to be created on Windows, Linux builds on Linux).
+
+1. Create and activate a virtual environment (recommended).
+2. Install the dependencies:
+   ```bash
+   pip install -r requirements.txt
+   pip install pyinstaller
+   ```
+3. Build an executable for your current platform:
+   ```bash
+   pyinstaller --onefile --name swamp_reconnect swamp_reconnect.py
+   ```
+   The resulting binary will be placed in the `dist/` directory.
+
+If you are building on Windows, PyInstaller will produce `swamp_reconnect.exe`. Running the same command on Linux produces a native ELF binary. Cross-compiling between platforms is not supported by PyInstaller, so run the build step separately on each OS.
+
 ## Updates
-I will check back here regularly and post updates when needed and when I have new ideas. You can check if there are updates on the Release page, or check the commit history above for more frequent changes.  
+I will check back here regularly and post updates when needed and when I have new ideas. You can check if there are updates on the Release page, or check the commit history above for more frequent changes.
 
 If significant changes or improvements are made, I will add new versions of the executable applications (binaries) on the Release page.  
 For experienced users, it is recommended to use the scripts for easier debugging if it does not run as intended.  
