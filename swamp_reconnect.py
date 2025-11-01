@@ -5,15 +5,11 @@ import requests
 import re
 import os
 from datetime import datetime
+import pexpect
 import shutil
 import sys
 import zipfile
 import shlex
-
-try:
-    import pexpect  # type: ignore
-except ImportError:  # pragma: no cover - optional dependency on Windows
-    pexpect = None
 
 DEBUG = False  # Enable debug output
 
@@ -63,24 +59,6 @@ else:
 
 # Global variable to store the full path to the patch tool executable
 GMOD_PATCH_TOOL_PATH = None
-PATCH_TOOL_REPO = "solsticegamestudios/GModPatchTool"
-
-# Regular expression used to strip ANSI colour codes from subprocess output
-ANSI_ESCAPE_RE = re.compile(r'\x1B[@-_][0-?]*[ -/]*[@-~]')
-PATCH_SUCCESS_MESSAGE = "Patch applied successfully"
-
-
-def _clean_patch_output(raw_output):
-    """Return subprocess text output with ANSI colour codes removed."""
-    if raw_output is None:
-        return ""
-    if not isinstance(raw_output, str):
-        try:
-            raw_output = raw_output.decode()
-        except Exception:
-            raw_output = str(raw_output)
-    return ANSI_ESCAPE_RE.sub('', raw_output)
-
 
 # Extract the patch from a zip file and set GMOD_PATCH_TOOL_PATH
 def extract_gmod_patch_tool(zip_path, extract_to):
@@ -95,18 +73,14 @@ def extract_gmod_patch_tool(zip_path, extract_to):
     # Recursively search for the executable inside the extracted files
     for root, dirs, files in os.walk(extract_to):
         for file in files:
-            lower_name = file.lower()
-            if "gmodpatchtool" not in lower_name:
-                continue
-            if lower_name.endswith(".exe") or lower_name.endswith(".bin") or \
-                    lower_name.endswith(".x86_64") or '.' not in file:
+            if file.lower().endswith(".exe") and "gmodpatchtool" in file.lower():
                 gmod_patch_tool_exe = os.path.join(root, file)
                 gmod_patch_tool_folder = root
                 break
         if gmod_patch_tool_exe:
             break
     if gmod_patch_tool_exe and gmod_patch_tool_folder:
-        dest_folder = os.path.join(os.path.dirname(zip_path), "gmodpatchtool")
+        dest_folder = os.path.join(os.path.dirname(zip_path), "GModPatchTool")
         if os.path.exists(dest_folder):
             shutil.rmtree(dest_folder)
         try:
@@ -121,7 +95,7 @@ def extract_gmod_patch_tool(zip_path, extract_to):
             os.chmod(GMOD_PATCH_TOOL_PATH, 0o755)  # Ensure the file is executable
         except Exception as e:
             log_message(f"⚠️ [ERROR] Failed to set executable permission: {e}")
-        log_message(f"✅ [INFO] Extracted gmodpatchtool to: {dest_folder}")
+        log_message(f"✅ [INFO] Extracted GModPatchTool to: {dest_folder}")
         return dest_folder
     else:
         log_message("⚠️ [ERROR] No executable found in the extracted zip.")
@@ -360,7 +334,7 @@ def launch_gmod():
         log_message("⚠️ [ERROR] No valid server IP. Cannot launch GMod.")
 
 # Restart GMod and trigger file validation, then wait for full validation before patching
-def validate_and_restart_gmod(apply_patch=False):
+def validate_and_restart_gmod():
     global failed_attempts, crash_attempts
     log_message("🔄 [INFO] Restarting GMod & verifying game files...")
     if os.name == 'nt':
@@ -383,15 +357,14 @@ def validate_and_restart_gmod(apply_patch=False):
     failed_attempts = 0
     crash_attempts = 0
     time.sleep(45)  # Wait to ensure Steam has fully validated files
-    if apply_patch:
-        if not run_gmod_patch_tool():
-            log_message("⚠️ [ERROR] gmodpatchtool did not apply successfully after validation.")
+    if not run_gmod_patch_tool():
+        log_message("⚠️ [ERROR] GModPatchTool did not apply successfully after validation.")
 
 # Check GitHub for a newer version of the patch and update if needed
 def check_for_new_patch_tool():
     global GMOD_PATCH_TOOL_PATH
     try:
-        response = requests.get(f"https://api.github.com/repos/{PATCH_TOOL_REPO}/releases/latest", timeout=10)
+        response = requests.get("https://api.github.com/repos/solsticegamestudios/GModPatchTool/releases/latest", timeout=10)
     except Exception as e:
         log_message(f"⚠️ [ERROR] Exception while fetching remote release info: {e}")
         return
@@ -424,24 +397,28 @@ def check_for_new_patch_tool():
         log_message(f"⚠️ [ERROR] Could not get modification time for local patch: {e}")
         return
     debug_log(f"Local patch file modification date: {local_date}")
-    assets = data.get("assets", [])
     if remote_date > local_date:
-        log_message(f"🌍 [INFO] New patch available from {PATCH_TOOL_REPO} (remote: {remote_date}, local: {local_date}). Updating...")
+        log_message(f"🌍 [INFO] New patch available (remote: {remote_date}, local: {local_date}). Updating...")
         if os.name == 'nt':
             asset_url = None
-            for asset in assets:
-                name = asset.get("name", "")
-                lower_name = name.lower()
-                if lower_name.endswith(".exe") and "gmodpatchtool" in lower_name:
-                    asset_url = asset.get("browser_download_url")
-                    break
-            if asset_url is None:
+            try:
+                response = requests.get("https://api.github.com/repos/solsticegamestudios/GModPatchTool/releases/latest", timeout=10)
+                data = response.json()
+                assets = data.get("assets", [])
                 for asset in assets:
                     name = asset.get("name", "")
-                    lower_name = name.lower()
-                    if lower_name.endswith(".zip") and "gmodpatchtool" in lower_name:
+                    if name.lower().endswith(".exe") and "gmodpatchtool" in name.lower():
                         asset_url = asset.get("browser_download_url")
                         break
+                if asset_url is None:
+                    for asset in assets:
+                        name = asset.get("name", "")
+                        if name.lower().endswith(".zip") and "gmodpatchtool" in name.lower():
+                            asset_url = asset.get("browser_download_url")
+                            break
+            except Exception as e:
+                log_message(f"⚠️ [ERROR] Exception while fetching asset info: {e}")
+                return
             if asset_url:
                 try:
                     r = requests.get(asset_url, timeout=10)
@@ -451,7 +428,7 @@ def check_for_new_patch_tool():
                             f.write(r.content)
                         os.chmod(exe_path, 0o755)
                         GMOD_PATCH_TOOL_PATH = exe_path
-                        log_message("✅ [INFO] Updated gmodpatchtool to the latest patch.")
+                        log_message("✅ [INFO] Updated GModPatchTool to the latest patch.")
                     else:
                         log_message("⚠️ [ERROR] Failed to download the patch from GitHub.")
                 except Exception as e:
@@ -460,19 +437,18 @@ def check_for_new_patch_tool():
                 log_message("⚠️ [ERROR] No suitable Windows patch found in the latest release.")
         else:
             asset_url = None
-            for asset in assets:
-                name = asset.get("name", "")
-                lower_name = name.lower()
-                if "linux" in lower_name and "gmodpatchtool" in lower_name:
-                    asset_url = asset.get("browser_download_url")
-                    break
-            if asset_url is None:
+            try:
+                response = requests.get("https://api.github.com/repos/solsticegamestudios/GModPatchTool/releases/latest", timeout=10)
+                data = response.json()
+                assets = data.get("assets", [])
                 for asset in assets:
                     name = asset.get("name", "")
-                    lower_name = name.lower()
-                    if lower_name.endswith(".zip") and "gmodpatchtool" in lower_name:
+                    if "linux" in name.lower() and "gmodpatchtool" in name.lower():
                         asset_url = asset.get("browser_download_url")
                         break
+            except Exception as e:
+                log_message(f"⚠️ [ERROR] Exception while fetching asset info: {e}")
+                return
             if asset_url:
                 try:
                     r = requests.get(asset_url, timeout=10)
@@ -482,7 +458,7 @@ def check_for_new_patch_tool():
                             f.write(r.content)
                         os.chmod(linux_path, 0o755)
                         GMOD_PATCH_TOOL_PATH = linux_path
-                        log_message("✅ [INFO] Updated gmodpatchtool for Linux to the latest patch.")
+                        log_message("✅ [INFO] Updated GModPatchTool for Linux to the latest patch.")
                         return
                     else:
                         log_message("⚠️ [ERROR] Failed to download the Linux patch from GitHub.")
@@ -493,83 +469,45 @@ def check_for_new_patch_tool():
     else:
         log_message(f"✅ [INFO] Local patch is up-to-date (remote: {remote_date}, local: {local_date}).")
 
-def _run_patch_tool_windows():
-    try:
-        process = subprocess.Popen(
-            [GMOD_PATCH_TOOL_PATH],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-    except Exception as e:
-        log_message(f"⚠️ [ERROR] Failed to launch gmodpatchtool: {e}")
-        return False
-
-    try:
-        # Send "n" pre-emptively in case the patcher asks to relaunch GMod.
-        stdout, _ = process.communicate(input="n\n", timeout=180)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        log_message("⚠️ [ERROR] gmodpatchtool timed out on Windows.")
-        return False
-
-    cleaned_output = _clean_patch_output(stdout)
-    if PATCH_SUCCESS_MESSAGE.lower() in cleaned_output.lower():
-        log_message("✅ [INFO] gmodpatchtool applied successfully (Windows).")
-        log_message(f"Output: {cleaned_output}")
-        return True
-
-    log_message("⚠️ [ERROR] gmodpatchtool did not report a successful patch on Windows.")
-    log_message(f"Output: {cleaned_output}")
-    return False
-
-
-def _run_patch_tool_posix():
-    if pexpect is None:
-        log_message("⚠️ [ERROR] pexpect is not installed; cannot run gmodpatchtool interactively on this platform.")
-        return False
-
-    try:
-        cmd = shlex.quote(GMOD_PATCH_TOOL_PATH)
-        child = pexpect.spawn("/bin/bash", ["-c", cmd], timeout=180)
-        child.logfile = sys.stdout.buffer
-        child.expect(PATCH_SUCCESS_MESSAGE, timeout=180)
-        try:
-            child.expect("Do you want to Launch Garry's Mod now\\?", timeout=30)
-            child.sendline("n")
-        except pexpect.TIMEOUT:
-            debug_log("No launch prompt received; continuing without sending input.")
-        output = _clean_patch_output(child.before)
-        log_message("✅ [INFO] gmodpatchtool applied successfully (pexpect).")
-        log_message(f"Output: {output}")
-        return True
-    except pexpect.TIMEOUT:
-        log_message("⚠️ [ERROR] gmodpatchtool timed out in pexpect mode.")
-        return False
-    except Exception as e:
-        log_message(f"⚠️ [ERROR] Exception in pexpect patch run: {e}")
-        return False
-
-
-# Run the patch tool using a platform-appropriate strategy.
+# Run the patch tool using pexpect inside a bash shell to capture output and send responses automatically.
 def run_gmod_patch_tool():
-    log_message("🛠 [INFO] Running gmodpatchtool...")
+    log_message("🛠 [INFO] Running GModPatchTool with pexpect...")
     check_for_new_patch_tool()
     if not GMOD_PATCH_TOOL_PATH or not os.path.exists(GMOD_PATCH_TOOL_PATH):
-        log_message(f"⚠️ [ERROR] gmodpatchtool not found at {GMOD_PATCH_TOOL_PATH}")
+        log_message(f"⚠️ [ERROR] GModPatchTool not found at {GMOD_PATCH_TOOL_PATH}")
         return False
     if not os.access(GMOD_PATCH_TOOL_PATH, os.X_OK):
-        log_message("⚠️ [ERROR] gmodpatchtool is not executable. Attempting to set executable permission.")
+        log_message(f"⚠️ [ERROR] GModPatchTool is not executable. Attempting to set executable permission.")
         try:
             os.chmod(GMOD_PATCH_TOOL_PATH, 0o755)
         except Exception as e:
             log_message(f"⚠️ [ERROR] Failed to set executable permission: {e}")
             return False
-
-    if os.name == 'nt':
-        return _run_patch_tool_windows()
-    return _run_patch_tool_posix()
+    try:
+        # Use bash to run the patcher, quoting the full absolute path to handle spaces
+        cmd = shlex.quote(GMOD_PATCH_TOOL_PATH)
+        child = pexpect.spawn("/bin/bash", ["-c", cmd], timeout=180)
+        child.logfile = sys.stdout.buffer
+        # Wait for the success message from the patcher
+        child.expect("Patch applied successfully", timeout=180)
+        # If the patcher then prompts for launching GMod, send "n"
+        try:
+            child.expect("Do you want to Launch Garry's Mod now\\?", timeout=30)
+            child.sendline("n")
+        except pexpect.TIMEOUT:
+            debug_log("No launch prompt received; continuing without sending input.")
+        output = child.before.decode() if hasattr(child.before, "decode") else child.before
+        ansi_escape = re.compile(r'\x1B[@-_][0-?]*[ -/]*[@-~]')
+        cleaned_output = ansi_escape.sub('', output)
+        log_message("✅ [INFO] GModPatchTool applied successfully (pexpect).")
+        log_message(f"Output: {cleaned_output}")
+        return True
+    except pexpect.TIMEOUT:
+        log_message("⚠️ [ERROR] GModPatchTool timed out in pexpect mode.")
+        return False
+    except Exception as e:
+        log_message(f"⚠️ [ERROR] Exception in pexpect patch run: {e}")
+        return False
 
 # Search common directories for the patch; download it if not found
 def auto_configure_gmod_patch_tool_path():
@@ -581,27 +519,17 @@ def auto_configure_gmod_patch_tool_path():
         if os.path.isdir(dir_path):
             search_dirs.append(dir_path)
     if os.name == 'nt':
-        patterns = [
-            ("GModPatchTool", ".exe"),
-            ("GModPatchTool", ".zip"),
-            ("gmodpatchtool", ".exe"),
-            ("gmodpatchtool", ".zip"),
-        ]
+        patterns = [("GModPatchTool", ".exe"), ("GModPatchTool", ".zip")]
     else:
-        patterns = [
-            ("GModPatchTool-Linux", ""),
-            ("gmodpatchtool", ""),
-            ("gmodpatchtool", ".zip"),
-            ("GModPatchTool", ".zip"),
-        ]
+        patterns = [("GModPatchTool-Linux", "")]
     for d in search_dirs:
         for root, _, files in os.walk(d):
             for file in files:
                 for prefix, ext in patterns:
                     if file.startswith(prefix) and file.endswith(ext):
                         candidate = os.path.join(root, file)
-                        if ext == ".zip":
-                            extract_dir = os.path.join(root, "gmodpatchtool_extracted")
+                        if os.name == 'nt' and ext == ".zip":
+                            extract_dir = os.path.join(root, "GModPatchTool_extracted")
                             os.makedirs(extract_dir, exist_ok=True)
                             try:
                                 extract_gmod_patch_tool(candidate, extract_dir)
@@ -610,9 +538,9 @@ def auto_configure_gmod_patch_tool_path():
                                 log_message(f"⚠️ [ERROR] Failed to extract zip: {e}")
                         else:
                             GMOD_PATCH_TOOL_PATH = candidate
-                            log_message(f"Found gmodpatchtool at: {GMOD_PATCH_TOOL_PATH}")
+                            log_message(f"Found GModPatchTool at: {GMOD_PATCH_TOOL_PATH}")
                             return GMOD_PATCH_TOOL_PATH
-    log_message("gmodpatchtool not found in common directories. Downloading latest patch...")
+    log_message("GModPatchTool not found in common directories. Downloading latest patch...")
     download_latest_gmod_patch_tool()
     return GMOD_PATCH_TOOL_PATH
 
@@ -621,7 +549,7 @@ def download_latest_gmod_patch_tool():
     global GMOD_PATCH_TOOL_PATH
     download_dir = os.path.dirname(os.path.realpath(__file__))
     try:
-        response = requests.get(f"https://api.github.com/repos/{PATCH_TOOL_REPO}/releases/latest", timeout=10)
+        response = requests.get("https://api.github.com/repos/solsticegamestudios/GModPatchTool/releases/latest", timeout=10)
     except Exception as e:
         log_message(f"⚠️ [ERROR] Exception while fetching release info from GitHub: {e}")
         return
@@ -661,7 +589,7 @@ def download_latest_gmod_patch_tool():
                 except Exception as e:
                     log_message(f"⚠️ [ERROR] Failed to set executable permission: {e}")
                 GMOD_PATCH_TOOL_PATH = exe_path
-                log_message("✅ [INFO] Downloaded latest gmodpatchtool (Windows).")
+                log_message("✅ [INFO] Downloaded latest patch (Windows).")
                 return
             else:
                 log_message("⚠️ [ERROR] Failed to download the executable patch.")
@@ -677,7 +605,7 @@ def download_latest_gmod_patch_tool():
             if r.status_code == 200:
                 with open(zip_path, "wb") as f:
                     f.write(r.content)
-                extract_dir = os.path.join(download_dir, "gmodpatchtool_extracted")
+                extract_dir = os.path.join(download_dir, "GModPatchTool_extracted")
                 os.makedirs(extract_dir, exist_ok=True)
                 extract_gmod_patch_tool(zip_path, extract_dir)
                 return
@@ -687,19 +615,14 @@ def download_latest_gmod_patch_tool():
             log_message("⚠️ [ERROR] No suitable Windows patch found in the latest release.")
     else:
         linux_asset = None
-        linux_zip_asset = None
         for asset in assets:
             name = asset.get("name", "")
-            lower_name = name.lower()
-            if "linux" in lower_name and "gmodpatchtool" in lower_name:
+            if "linux" in name.lower() and "gmodpatchtool" in name.lower():
                 linux_asset = asset
                 break
-            if lower_name.endswith(".zip") and "gmodpatchtool" in lower_name:
-                linux_zip_asset = asset
-        target_asset = linux_asset or linux_zip_asset
-        if target_asset:
-            url = target_asset.get("browser_download_url")
-            target_path = os.path.join(download_dir, target_asset.get("name"))
+        if linux_asset:
+            url = linux_asset.get("browser_download_url")
+            linux_path = os.path.join(download_dir, linux_asset.get("name"))
             log_message(f"Downloading latest patch (Linux) from: {url}")
             try:
                 r = requests.get(url, timeout=10)
@@ -707,19 +630,14 @@ def download_latest_gmod_patch_tool():
                 log_message(f"⚠️ [ERROR] Exception while downloading Linux asset: {e}")
                 return
             if r.status_code == 200:
-                with open(target_path, "wb") as f:
+                with open(linux_path, "wb") as f:
                     f.write(r.content)
-                if target_path.lower().endswith(".zip"):
-                    extract_dir = os.path.join(download_dir, "gmodpatchtool_extracted")
-                    os.makedirs(extract_dir, exist_ok=True)
-                    extract_gmod_patch_tool(target_path, extract_dir)
-                    return
                 try:
-                    os.chmod(target_path, 0o755)
+                    os.chmod(linux_path, 0o755)
                 except Exception as e:
                     log_message(f"⚠️ [ERROR] Failed to set executable permission: {e}")
-                GMOD_PATCH_TOOL_PATH = target_path
-                log_message("✅ [INFO] Downloaded latest gmodpatchtool (Linux).")
+                GMOD_PATCH_TOOL_PATH = linux_path
+                log_message("✅ [INFO] Downloaded latest patch (Linux).")
                 return
             else:
                 log_message("⚠️ [ERROR] Failed to download the Linux patch.")
@@ -752,16 +670,15 @@ def main():
                 crash_attempts += 1
                 launch_gmod()
                 if crash_attempts >= 3:
-                    log_message("⚠️ [INFO] 3 consecutive failed launches detected. Validating game files before retrying...")
-                    validate_and_restart_gmod(apply_patch=False)
+                    log_message("⚠️ [INFO] 3 consecutive failed launches detected. Validating and reapplying patch...")
+                    validate_and_restart_gmod()
                     crash_attempts = 0
             else:
                 log_state_change("connection", False, "🔴 [INFO] GMod is running but NOT connected.")
                 failed_attempts += 1
                 if failed_attempts >= FAILED_ATTEMPTS_THRESHOLD:
                     fetch_server_ip(force=True)
-                    log_message("⚠️ [INFO] Connection retries exceeded. Validating game files and applying gmodpatchtool...")
-                    validate_and_restart_gmod(apply_patch=True)
+                    validate_and_restart_gmod()
                     failed_attempts = 0
 
             time.sleep(CHECK_INTERVAL)
