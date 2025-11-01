@@ -25,7 +25,8 @@ SWAMP_URL = "https://swamp.sv/"
 CHECK_DURATION = 5               # Duration for traffic capture (seconds)
 MAX_RETRIES = 3                  # Maximum retry attempts for capturing UDP traffic
 CHECK_INTERVAL = 10              # Time interval between main loop checks (seconds)
-FAILED_ATTEMPTS_THRESHOLD = 3    # Number of failed launch attempts before validation
+PATCH_FAILURE_THRESHOLD = 3      # Failed connection attempts before running the patch
+POST_PATCH_VALIDATION_THRESHOLD = 2  # Failed attempts after a patch before validation
 MIN_PACKET_THRESHOLD = 5         # Minimum packets to consider traffic active
 
 # Caching for server IP fetch
@@ -59,6 +60,7 @@ else:
 
 # Global variable to store the full path to the patch tool executable
 GMOD_PATCH_TOOL_PATH = None
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 
 # Extract the patch from a zip file and set GMOD_PATCH_TOOL_PATH
 def extract_gmod_patch_tool(zip_path, extract_to):
@@ -73,10 +75,19 @@ def extract_gmod_patch_tool(zip_path, extract_to):
     # Recursively search for the executable inside the extracted files
     for root, dirs, files in os.walk(extract_to):
         for file in files:
-            if file.lower().endswith(".exe") and "gmodpatchtool" in file.lower():
+            lowered = file.lower()
+            if "gmodpatchtool" not in lowered:
+                continue
+            if os.name == 'nt' and lowered.endswith(".exe"):
                 gmod_patch_tool_exe = os.path.join(root, file)
                 gmod_patch_tool_folder = root
                 break
+            if os.name != 'nt' and not lowered.endswith(".zip"):
+                candidate_path = os.path.join(root, file)
+                if os.access(candidate_path, os.X_OK) or lowered == "gmodpatchtool":
+                    gmod_patch_tool_exe = candidate_path
+                    gmod_patch_tool_folder = root
+                    break
         if gmod_patch_tool_exe:
             break
     if gmod_patch_tool_exe and gmod_patch_tool_folder:
@@ -107,6 +118,9 @@ last_connection_state = None
 failed_attempts = 0
 crash_attempts = 0
 server_ip = None
+patch_triggered_after_failures = False
+post_patch_failure_attempts = 0
+patch_required_before_launch = False
 
 # Simple logging function with a timestamp
 def log_message(message):
@@ -315,8 +329,13 @@ def log_state_change(state_variable, new_state, message):
 
 # Launch GMod using the appropriate Steam URI
 def launch_gmod():
-    global failed_attempts, crash_attempts, server_ip
+    global failed_attempts, crash_attempts, server_ip, patch_required_before_launch
     if server_ip:
+        if patch_required_before_launch:
+            if not run_gmod_patch_tool():
+                log_message("⚠️ [ERROR] Patch tool failed to run before reconnect attempt. Aborting launch.")
+                return
+            patch_required_before_launch = False
         log_message(f"🚀 [INFO] Launching GMod & connecting to {server_ip}:27015...")
         if os.name == 'nt':
             steam_uri = GMOD_STEAM_URI.format(server_ip=server_ip)
@@ -335,8 +354,9 @@ def launch_gmod():
 
 # Restart GMod and trigger file validation, then wait for full validation before patching
 def validate_and_restart_gmod():
-    global failed_attempts, crash_attempts
+    global failed_attempts, crash_attempts, patch_required_before_launch, patch_triggered_after_failures, post_patch_failure_attempts
     log_message("🔄 [INFO] Restarting GMod & verifying game files...")
+    patch_required_before_launch = True
     if os.name == 'nt':
         try:
             subprocess.run(["taskkill", "/F", "/IM", "gmod.exe"],
@@ -356,9 +376,13 @@ def validate_and_restart_gmod():
                        stderr=subprocess.DEVNULL)
     failed_attempts = 0
     crash_attempts = 0
+    patch_triggered_after_failures = False
+    post_patch_failure_attempts = 0
     time.sleep(45)  # Wait to ensure Steam has fully validated files
     if not run_gmod_patch_tool():
         log_message("⚠️ [ERROR] GModPatchTool did not apply successfully after validation.")
+    else:
+        patch_required_before_launch = False
 
 # Check GitHub for a newer version of the patch and update if needed
 def check_for_new_patch_tool():
@@ -471,6 +495,8 @@ def check_for_new_patch_tool():
 
 # Run the patch tool using pexpect inside a bash shell to capture output and send responses automatically.
 def run_gmod_patch_tool():
+    if not ensure_gmod_patch_tool_ready():
+        return False
     log_message("🛠 [INFO] Running GModPatchTool with pexpect...")
     check_for_new_patch_tool()
     if not GMOD_PATCH_TOOL_PATH or not os.path.exists(GMOD_PATCH_TOOL_PATH):
@@ -486,8 +512,14 @@ def run_gmod_patch_tool():
     try:
         # Use bash to run the patcher, quoting the full absolute path to handle spaces
         cmd = shlex.quote(GMOD_PATCH_TOOL_PATH)
-        child = pexpect.spawn("/bin/bash", ["-c", cmd], timeout=180)
-        child.logfile = sys.stdout.buffer
+        child = pexpect.spawn(
+            "/bin/bash",
+            ["-c", cmd],
+            timeout=180,
+            encoding="utf-8",
+            errors="replace",
+        )
+        child.logfile = sys.stdout
         # Wait for the success message from the patcher
         child.expect("Patch applied successfully", timeout=180)
         # If the patcher then prompts for launching GMod, send "n"
@@ -496,7 +528,7 @@ def run_gmod_patch_tool():
             child.sendline("n")
         except pexpect.TIMEOUT:
             debug_log("No launch prompt received; continuing without sending input.")
-        output = child.before.decode() if hasattr(child.before, "decode") else child.before
+        output = child.before
         ansi_escape = re.compile(r'\x1B[@-_][0-?]*[ -/]*[@-~]')
         cleaned_output = ansi_escape.sub('', output)
         log_message("✅ [INFO] GModPatchTool applied successfully (pexpect).")
@@ -512,37 +544,68 @@ def run_gmod_patch_tool():
 # Search common directories for the patch; download it if not found
 def auto_configure_gmod_patch_tool_path():
     global GMOD_PATCH_TOOL_PATH
-    search_dirs = []
+    if GMOD_PATCH_TOOL_PATH and os.path.exists(GMOD_PATCH_TOOL_PATH):
+        return GMOD_PATCH_TOOL_PATH
+    search_dirs = [SCRIPT_DIR]
     home = os.path.expanduser("~")
     for folder in ["Documents", "Desktop", "Downloads"]:
         dir_path = os.path.join(home, folder)
-        if os.path.isdir(dir_path):
+        if os.path.isdir(dir_path) and dir_path not in search_dirs:
             search_dirs.append(dir_path)
     if os.name == 'nt':
         patterns = [("GModPatchTool", ".exe"), ("GModPatchTool", ".zip")]
-    else:
-        patterns = [("GModPatchTool-Linux", "")]
-    for d in search_dirs:
-        for root, _, files in os.walk(d):
-            for file in files:
-                for prefix, ext in patterns:
-                    if file.startswith(prefix) and file.endswith(ext):
-                        candidate = os.path.join(root, file)
-                        if os.name == 'nt' and ext == ".zip":
-                            extract_dir = os.path.join(root, "GModPatchTool_extracted")
-                            os.makedirs(extract_dir, exist_ok=True)
-                            try:
-                                extract_gmod_patch_tool(candidate, extract_dir)
+        for d in search_dirs:
+            for root, _, files in os.walk(d):
+                for file in files:
+                    for prefix, ext in patterns:
+                        if file.startswith(prefix) and file.endswith(ext):
+                            candidate = os.path.join(root, file)
+                            if ext == ".zip":
+                                extract_dir = os.path.join(root, "GModPatchTool_extracted")
+                                os.makedirs(extract_dir, exist_ok=True)
+                                try:
+                                    extract_gmod_patch_tool(candidate, extract_dir)
+                                    return GMOD_PATCH_TOOL_PATH
+                                except Exception as e:
+                                    log_message(f"⚠️ [ERROR] Failed to extract zip: {e}")
+                            else:
+                                GMOD_PATCH_TOOL_PATH = candidate
+                                log_message(f"Found GModPatchTool at: {GMOD_PATCH_TOOL_PATH}")
                                 return GMOD_PATCH_TOOL_PATH
-                            except Exception as e:
-                                log_message(f"⚠️ [ERROR] Failed to extract zip: {e}")
-                        else:
-                            GMOD_PATCH_TOOL_PATH = candidate
-                            log_message(f"Found GModPatchTool at: {GMOD_PATCH_TOOL_PATH}")
-                            return GMOD_PATCH_TOOL_PATH
+    else:
+        for d in search_dirs:
+            for root, _, files in os.walk(d):
+                for file in files:
+                    lowered = file.lower()
+                    candidate = os.path.join(root, file)
+                    if lowered == "gmodpatchtool" or ("gmodpatchtool" in lowered and os.access(candidate, os.X_OK)):
+                        GMOD_PATCH_TOOL_PATH = candidate
+                        log_message(f"Found GModPatchTool at: {GMOD_PATCH_TOOL_PATH}")
+                        return GMOD_PATCH_TOOL_PATH
+                    if lowered.endswith(".zip") and "gmodpatchtool" in lowered:
+                        extract_dir = os.path.join(root, "GModPatchTool_extracted")
+                        os.makedirs(extract_dir, exist_ok=True)
+                        try:
+                            extract_gmod_patch_tool(candidate, extract_dir)
+                            if GMOD_PATCH_TOOL_PATH and os.path.exists(GMOD_PATCH_TOOL_PATH):
+                                log_message(f"Found GModPatchTool at: {GMOD_PATCH_TOOL_PATH}")
+                                return GMOD_PATCH_TOOL_PATH
+                        except Exception as e:
+                            log_message(f"⚠️ [ERROR] Failed to extract zip: {e}")
     log_message("GModPatchTool not found in common directories. Downloading latest patch...")
     download_latest_gmod_patch_tool()
     return GMOD_PATCH_TOOL_PATH
+
+# Ensure the patch tool exists locally, downloading it if necessary.
+def ensure_gmod_patch_tool_ready():
+    global GMOD_PATCH_TOOL_PATH
+    if GMOD_PATCH_TOOL_PATH and os.path.exists(GMOD_PATCH_TOOL_PATH):
+        return True
+    auto_configure_gmod_patch_tool_path()
+    if GMOD_PATCH_TOOL_PATH and os.path.exists(GMOD_PATCH_TOOL_PATH):
+        return True
+    log_message("⚠️ [ERROR] Unable to locate GModPatchTool. Download may have failed.")
+    return False
 
 # Download the latest patch from GitHub if not available locally
 def download_latest_gmod_patch_tool():
@@ -632,13 +695,21 @@ def download_latest_gmod_patch_tool():
             if r.status_code == 200:
                 with open(linux_path, "wb") as f:
                     f.write(r.content)
-                try:
-                    os.chmod(linux_path, 0o755)
-                except Exception as e:
-                    log_message(f"⚠️ [ERROR] Failed to set executable permission: {e}")
-                GMOD_PATCH_TOOL_PATH = linux_path
-                log_message("✅ [INFO] Downloaded latest patch (Linux).")
-                return
+                if linux_path.lower().endswith(".zip"):
+                    extract_dir = os.path.join(download_dir, "GModPatchTool_extracted")
+                    os.makedirs(extract_dir, exist_ok=True)
+                    extract_gmod_patch_tool(linux_path, extract_dir)
+                    if GMOD_PATCH_TOOL_PATH and os.path.exists(GMOD_PATCH_TOOL_PATH):
+                        log_message("✅ [INFO] Downloaded and extracted latest patch (Linux).")
+                        return
+                else:
+                    try:
+                        os.chmod(linux_path, 0o755)
+                    except Exception as e:
+                        log_message(f"⚠️ [ERROR] Failed to set executable permission: {e}")
+                    GMOD_PATCH_TOOL_PATH = linux_path
+                    log_message("✅ [INFO] Downloaded latest patch (Linux).")
+                    return
             else:
                 log_message("⚠️ [ERROR] Failed to download the Linux patch.")
         else:
@@ -647,7 +718,7 @@ def download_latest_gmod_patch_tool():
 # Main loop: continuously check server status and apply patch as needed.
 # This loop only re-fetches the server IP after repeated connection failures.
 def main():
-    global server_ip, failed_attempts, crash_attempts
+    global server_ip, failed_attempts, crash_attempts, patch_triggered_after_failures, post_patch_failure_attempts
     auto_configure_gmod_patch_tool_path()
     check_dependencies()
     while True:
@@ -665,6 +736,8 @@ def main():
                 log_state_change("gmod", True, "🟢 [INFO] GMod is running & connected to the server.")
                 failed_attempts = 0
                 crash_attempts = 0
+                patch_triggered_after_failures = False
+                post_patch_failure_attempts = 0
             elif not gmod_running:
                 log_state_change("gmod", False, "❌ [INFO] GMod is NOT running. Attempting to launch...")
                 crash_attempts += 1
@@ -673,13 +746,27 @@ def main():
                     log_message("⚠️ [INFO] 3 consecutive failed launches detected. Validating and reapplying patch...")
                     validate_and_restart_gmod()
                     crash_attempts = 0
+                failed_attempts = 0
+                patch_triggered_after_failures = False
+                post_patch_failure_attempts = 0
             else:
                 log_state_change("connection", False, "🔴 [INFO] GMod is running but NOT connected.")
                 failed_attempts += 1
-                if failed_attempts >= FAILED_ATTEMPTS_THRESHOLD:
-                    fetch_server_ip(force=True)
-                    validate_and_restart_gmod()
-                    failed_attempts = 0
+                if not patch_triggered_after_failures and failed_attempts >= PATCH_FAILURE_THRESHOLD:
+                    log_message(f"🛠 [INFO] {failed_attempts} connection attempts failed. Running GModPatchTool...")
+                    if run_gmod_patch_tool():
+                        patch_triggered_after_failures = True
+                        post_patch_failure_attempts = 0
+                        failed_attempts = 0
+                    else:
+                        failed_attempts = 0
+                elif patch_triggered_after_failures:
+                    post_patch_failure_attempts += 1
+                    if post_patch_failure_attempts >= POST_PATCH_VALIDATION_THRESHOLD:
+                        log_message("🔍 [INFO] Connection still failing after patch. Validating game files...")
+                        fetch_server_ip(force=True)
+                        validate_and_restart_gmod()
+                        failed_attempts = 0
 
             time.sleep(CHECK_INTERVAL)
         except Exception as e:
