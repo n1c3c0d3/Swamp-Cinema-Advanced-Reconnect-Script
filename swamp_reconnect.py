@@ -752,8 +752,8 @@ def main():
                 crash_attempts += 1
                 launch_gmod()
                 if crash_attempts >= 3:
-                    log_message("⚠️ [INFO] 3 consecutive failed launches detected. Validating game files and applying gmodpatchtool before retrying...")
-                    validate_and_restart_gmod(apply_patch=True)
+                    log_message("⚠️ [INFO] 3 consecutive failed launches detected. Validating game files before retrying...")
+                    validate_and_restart_gmod(apply_patch=False)
                     crash_attempts = 0
             else:
                 log_state_change("connection", False, "🔴 [INFO] GMod is running but NOT connected.")
