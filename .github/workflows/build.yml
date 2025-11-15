@@ -1,0 +1,113 @@
+name: Build & Release Binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+
+run-name: "Build & Release for tag ${{ github.ref_name }}"
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build binaries
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: swamp_reconnect-linux
+            exe_name: swamp_reconnect.Linux
+          - os: windows-latest
+            artifact_name: swamp_reconnect-windows
+            exe_name: swamp_reconnect.exe
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Inject version into script
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"  # strip leading 'v'
+          echo "Detected version: ${VERSION}"
+
+          if grep -q '^__version__' swamp_reconnect.py; then
+            echo "Updating __version__ in swamp_reconnect.py"
+            sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" swamp_reconnect.py
+          else
+            echo "No __version__ line found in swamp_reconnect.py, skipping version injection."
+          fi
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          echo "RUNNER_OS is $RUNNER_OS"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            pyinstaller --onefile --name swamp_reconnect.Linux swamp_reconnect.py
+          else
+            pyinstaller --onefile --name swamp_reconnect swamp_reconnect.py
+          fi
+
+      - name: Upload compiled binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.exe_name }}
+
+  release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all compiled binaries
+        uses: actions/download-artifact@v4
+
+      - name: Compute release title
+        id: title
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          DATE="$(date +"%B, %d %Y")"
+          TITLE="SCARS ${TAG} (${DATE})"
+          echo "title=${TITLE}" >> $GITHUB_OUTPUT
+
+      - name: Generate checksums
+        id: checksums
+        run: |
+          echo "Generating SHA256 checksums..."
+          sha256sum swamp_reconnect-linux/swamp_reconnect.Linux > checksums.txt
+          sha256sum swamp_reconnect-windows/swamp_reconnect.exe >> checksums.txt
+          echo "Checksums:" && cat checksums.txt
+          echo "checksums_path=checksums.txt" >> $GITHUB_OUTPUT
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: ${{ steps.title.outputs.title }}
+          generate_release_notes: true
+          files: |
+            swamp_reconnect-linux/**
+            swamp_reconnect-windows/**
+            ${{ steps.checksums.outputs.checksums_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
