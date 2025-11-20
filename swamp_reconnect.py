@@ -88,14 +88,17 @@ import pexpect
 import signal  # For sending SIGTERM/SIGKILL to stale GModPatchTool processes
 
 # Optional debug logger (controlled by DEBUG flag)
-DEBUG = False
+# 0=off, 1=basic, 2=detailed, 3=verbose   (verbose is not implemented until unknown exceptions arise, only meant for meticulous diagnostics)
+DEBUG_LEVEL = 0
 
+def debug(level: int, msg: str) -> None:
+    if DEBUG_LEVEL >= level:
+        print(f"[DEBUG-{level}] {msg}")
 
+# Backwards-compatible single-level debug logger.
+# Existing calls in the script use debug_log(msg); these are treated as level 1 debug messages under the new system.
 def debug_log(msg: str) -> None:
-    # Internal debug logging controlled by DEBUG flag
-    if DEBUG:
-        print(f"DEBUG: {msg}")
-
+    debug(1, msg)
 
 # Where we scrape the live server IP from:
 SWAMP_URL = "https://swamp.sv/"
@@ -131,7 +134,7 @@ SESSION.headers.update({
     'Connection': 'keep-alive',
 })
 
-# Platform-specific bits
+# OS-specific settings for Steam URIs, process names, and required commands
 if os.name == 'nt':
     GMOD_STEAM_URI = "steam://connect/{server_ip}:27015"  # Steam connect URI
     GMOD_VALIDATE_URI = "steam://validate/4000"           # Steam validate URI
