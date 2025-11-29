@@ -1,73 +1,40 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Swamp Reconnect Script
+#
+# Swamp Reconnect Script — version 1.2-stable
+#
+# This script automates reconnect behavior for the Swamp Cinema GMod server.
+# It monitors the local GMod process, detects connectivity to the server,
+# and applies recovery steps when the client becomes disconnected.
+#
+# Core detection logic:
+#   - GMod is considered “healthy” when:
+#       • the game process is running, AND
+#       • UDP traffic to the Swamp server is observed.
+#   - If UDP is silent, the script falls back to an A2S_INFO server probe.
+#
+# Recovery policy:
+#   - After N consecutive failed checks (default: 3), the script runs
+#     GModPatchTool (without validation) and may relaunch GMod.
+#   - If failures continue after patching, the script escalates to a full
+#     Steam file validation + patch cycle.
+#   - Repeated early crashes during launch also trigger validation.
+#
+# GModPatchTool integration:
+#   - Automatically finds or downloads the correct platform build.
+#   - Handles stale/duplicate instances and cleans up leftover pid files.
+#   - Runs interactively via pexpect so all output appears in this console.
+#   - Always keeps GMod closed during patching.
+#
+# Additional features:
+#   - Auto-detects Swamp server IP from https://swamp.sv/.
+#   - Uses platform-appropriate process checks and network capture tools
+#     (tcpdump on Linux, dumpcap on Windows).
+#   - Prints clear state-change logs and minimizes unnecessary noise.
+#
+# This script is designed to be robust, self-correcting, and safe to run
+# unattended. Press Ctrl+C to exit at any time.
 
-A fault-tolerant auto-reconnect manager for Garry’s Mod clients on the
-Swamp Cinema server. The script continuously evaluates the client’s
-connection state and applies staged recovery actions when problems are
-detected.
-
-High-level design:
-------------------
-• Healthy state:
-  GMod is running AND UDP traffic is observed with the active Swamp IP.
-
-• Failure detection:
-  Consecutive failed connectivity checks increment `failure_ticks`
-  (server must be online for failures to count).
-
-• Recovery pipeline:
-    1. Soft recovery:
-       - Run GModPatchTool after repeated failures.
-       - Relaunch GMod and attempt to reconnect.
-    2. Hard recovery:
-       - If post-patch failures persist, trigger Steam file validation
-         and re-apply the patch (at most once per failure window).
-    3. Final escalation:
-       - If even validation fails to stabilize the connection,
-         the script continues relaunch attempts but does not spam
-         validation loops.
-       - If failures keep accumulating, enter “catastrophic” mode:
-         pause all remediation for 1 hour, then retry.
-
-• Patch management:
-  - Automatically discover or download GModPatchTool.
-  - Select correct platform asset.
-  - Auto-update to the latest release.
-  - Clean up stale pid-locks or zombie patcher processes.
-
-• Server monitoring:
-  - UDP packet sniffing (tcpdump/dumpcap).
-  - A2S_INFO pings when no packets are observed.
-  - Live server IP scraping from swamp.sv.
-
-Behavior summary:
------------------
-- When the Swamp server is OFFLINE/unreachable:
-  * No failures are counted and no patches/validations are triggered.
-
-- When GMod is NOT running while the server is online:
-  * The script launches GMod and allows a grace window.
-  * If GMod starts and then closes before ever reaching a healthy
-    connection, that counts as a failure tick.
-  * If GMod never appears to start within the grace window, that also
-    counts as a failure tick.
-
-- When GMod IS running but has no UDP traffic while the server is online:
-  * Each such check after the grace window counts as a failure tick.
-
-- Validation is **not** retried endlessly:
-  * After a validate+patch cycle, the script will not revalidate again
-    until a healthy connection has been achieved at least once.
-
-- Catastrophic mode:
-  * If the failure count explodes (e.g. VAC/Steam outage or deep
-    systemic problem), the script enters a 1-hour backoff period with
-    no patch/validate/relaunch.
-  * After that hour, it resets the recovery window and retries the
-    normal pipeline.
-"""
 
 __version__ = "DEV"
 
@@ -88,35 +55,28 @@ import pexpect
 import signal  # For sending SIGTERM/SIGKILL to stale GModPatchTool processes
 
 # Optional debug logger (controlled by DEBUG flag)
-# 0=off, 1=basic, 2=detailed, 3=verbose   (verbose is not implemented until unknown exceptions arise, only meant for meticulous diagnostics)
-DEBUG_LEVEL = 0
+DEBUG = False
 
-def debug(level: int, msg: str) -> None:
-    if DEBUG_LEVEL >= level:
-        print(f"[DEBUG-{level}] {msg}")
 
-# Backwards-compatible single-level debug logger.
-# Existing calls in the script use debug_log(msg); these are treated as level 1 debug messages under the new system.
 def debug_log(msg: str) -> None:
-    debug(1, msg)
+    # Internal debug logging controlled by DEBUG flag
+    if DEBUG:
+        print(f"DEBUG: {msg}")
 
-# Where we scrape the live server IP from:
+
+# Where we scrape the live server IP from
 SWAMP_URL = "https://swamp.sv/"
 
 # Networking/monitoring knobs
-CHECK_DURATION = 3            # seconds to listen for network packets each check
-MAX_RETRIES = 2               # how many quick attempts for packet checks (per phase)
-CHECK_INTERVAL = 10           # main loop sleep between checks (seconds)
-PATCH_FAILURE_THRESHOLD = 3   # after this many failure ticks, run patch (no validation)
-POST_PATCH_VALIDATION_THRESHOLD = 2  # after patching, this many more fails => validate + patch
+CHECK_DURATION = 5            # Seconds to listen for network packets each check
+MAX_RETRIES = 3               # How many quick attempts for packet checks (per phase)
+CHECK_INTERVAL = 10           # Main loop sleep between checks (seconds)
+PATCH_FAILURE_THRESHOLD = 3   # After this many failure ticks, run patch (no validation)
+POST_PATCH_VALIDATION_THRESHOLD = 2  # After patching, this many more fails => validate + patch
 MIN_PACKET_THRESHOLD = 5      # tcpdump -c <count>; how many packets qualify a "connected" state
 
-# Grace period after launching GMod before we treat failures as real
-LAUNCH_GRACE_SECONDS = 45
-
-# Catastrophic backoff configuration
-MAX_FAILURES_PER_WINDOW = 10          # hard cap on failures before we consider it catastrophic
-CATASTROPHIC_BACKOFF_SECONDS = 3600   # 1 hour cooldown before retrying full recovery pipeline
+# Grace period after launching GMod before we treat failures as real (for connection checks)
+LAUNCH_GRACE_SECONDS = 30
 
 # Cache server IP fetches to avoid hammering the site
 FETCH_INTERVAL_SECONDS = 60
@@ -125,17 +85,17 @@ last_fetch_time = 0
 # Shared HTTP session with sensible headers (helps avoid being blocked)
 SESSION = requests.Session()
 SESSION.headers.update({
-    'User-Agent': (
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
-        '(KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     ),
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Connection': 'keep-alive',
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive",
 })
 
-# OS-specific settings for Steam URIs, process names, and required commands
-if os.name == 'nt':
+# Platform-specific bits
+if os.name == "nt":
     GMOD_STEAM_URI = "steam://connect/{server_ip}:27015"  # Steam connect URI
     GMOD_VALIDATE_URI = "steam://validate/4000"           # Steam validate URI
     PROCESS_NAMES = ["gmod.exe"]                          # Processes indicating GMod is running
@@ -144,7 +104,7 @@ else:
     GMOD_STEAM_URI = "steam://connect/{server_ip}:27015"
     GMOD_VALIDATE_URI = "steam://validate/4000"
     PROCESS_NAMES = ["gmod", "hl2_linux", "hl2.sh", "garrysmod"]  # Common Linux GMod processes
-    REQUIRED_CMDS = ["tcpdump", "pgrep", "xdg-open", "timeout"]   # Capture, process grep, open URIs, timeout
+    REQUIRED_CMDS = ["tcpdump", "pgrep", "xdg-open"]              # Capture, process grep, open URIs
 
 # Path to the patcher executable (set dynamically)
 GMOD_PATCH_TOOL_PATH: str | None = None
@@ -152,28 +112,23 @@ GMOD_PATCH_TOOL_PATH: str | None = None
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 
 # State trackers for logging & policy decisions
-last_gmod_state: bool | None = None         # Last known "GMod running" state
-last_connection_state: bool | None = None   # Last known network connectivity state
+last_gmod_state: bool | None = None       # Last known "GMod running" state
+last_connection_state: bool | None = None # Last known network connectivity state
 
-failure_ticks = 0  # Consecutive failures while server is online (only when GMod is running / launching)
-server_ip: str | None = None  # Current Swamp server IP scraped from SWAMP_URL
+failure_ticks = 0                         # Consecutive failures while server is online (only when GMod is running)
+server_ip: str | None = None              # Current Swamp server IP scraped from SWAMP_URL
 
-patch_triggered_after_failures = False        # True once patch has been run for this failure window
-post_patch_failure_attempts = 0               # Failures after patch before validation escalation
-patch_required_before_launch = False          # Flag that a patch is required before next launch
-validated_and_patched_recently = False        # True after a validate+patch cycle started
-had_success_since_validate = False            # Tracks a successful connection post-validate
+patch_triggered_after_failures = False    # True once patch has been run for this failure window
+post_patch_failure_attempts = 0           # Failures after patch before validation escalation
+patch_required_before_launch = False      # Flag that a patch is required before next launch
+validated_and_patched_recently = False    # True after a validate+patch cycle
+had_success_since_validate = False        # Tracks a successful connection post-validate
 
-loop_count = 0            # Simple loop counter for diagnostics
-last_launch_time = None   # Timestamp of last GMod launch (for grace period)
+loop_count = 0                            # Simple loop counter for diagnostics
+last_launch_time = None                   # Timestamp of last GMod launch (for grace period)
 
-# Per-launch flags:
-gmod_seen_since_launch = False      # True if we've seen GMod running since last launch
-healthy_since_launch = False        # True if we've seen a healthy connection since last launch
-
-# Catastrophic mode state:
-catastrophic_mode = False           # True when we've given up for an hour
-catastrophic_since = None           # Timestamp when catastrophic mode was entered
+launch_failures = 0                       # Number of early launch failures (crashes/failed starts)
+saw_gmod_since_last_launch = False        # True once we have observed GMod running after a launch
 
 
 def log_message(message: str) -> None:
@@ -210,7 +165,7 @@ def find_executable_in_dir(dir_path: str) -> str | None:
                 and not name.endswith((".zip", ".tar", ".tar.gz", ".tgz", ".pid"))
             ):
                 candidate = os.path.join(root, file)
-                if os.name == 'nt':
+                if os.name == "nt":
                     if not name.endswith(".exe"):
                         continue
                 else:
@@ -246,7 +201,7 @@ def fetch_server_ip(force: bool = False) -> None:
     last_fetch_time = current_time
 
     try:
-        response = SESSION.get(SWAMP_URL, timeout=5, headers={'Referer': SWAMP_URL})
+        response = SESSION.get(SWAMP_URL, timeout=5, headers={"Referer": SWAMP_URL})
         response.raise_for_status()
     except Exception as e:
         log_message(f"⚠️ [ERROR] Failed to fetch server IP: {e}")
@@ -264,7 +219,7 @@ def fetch_server_ip(force: bool = False) -> None:
 
 def is_gmod_running() -> bool:
     # Determine whether GMod is currently running on this machine
-    if os.name == 'nt':
+    if os.name == "nt":
         try:
             output = subprocess.check_output(["tasklist"], text=True)
             for proc in PROCESS_NAMES:
@@ -328,10 +283,14 @@ def find_active_interface(ip: str) -> str:
         temp_file = "temp_test.pcap"
         cmd = [
             dumpcap_path,
-            "-i", iface,
-            "-a", "duration:2",
-            "-f", filter_str,
-            "-w", temp_file,
+            "-i",
+            iface,
+            "-a",
+            "duration:2",
+            "-f",
+            filter_str,
+            "-w",
+            temp_file,
         ]
         try:
             subprocess.run(
@@ -357,20 +316,24 @@ def check_udp_traffic(ip: str, retries: int = MAX_RETRIES) -> bool:
     # Check whether we observe UDP traffic to/from the Swamp server IP
     if not ip:
         return False
-    if os.name == 'nt':
+    if os.name == "nt":
         dumpcap_path = shutil.which("dumpcap")
         if not dumpcap_path:
             return False
         interface = find_active_interface(ip)
         filter_str = f"host {ip}"
-        for _ in range(retries):
+        for attempt in range(retries):
             temp_file = "temp_capture.pcap"
             cmd = [
                 dumpcap_path,
-                "-i", interface,
-                "-a", f"duration:{CHECK_DURATION}",
-                "-f", filter_str,
-                "-w", temp_file,
+                "-i",
+                interface,
+                "-a",
+                f"duration:{CHECK_DURATION}",
+                "-f",
+                filter_str,
+                "-w",
+                temp_file,
             ]
             try:
                 subprocess.run(
@@ -390,11 +353,17 @@ def check_udp_traffic(ip: str, retries: int = MAX_RETRIES) -> bool:
             time.sleep(2)
         return False
     else:
-        for _ in range(retries):
+        for attempt in range(retries):
             cmd = [
-                "timeout", str(CHECK_DURATION),
-                "tcpdump", "-nn", "-q", "-c", str(MIN_PACKET_THRESHOLD),
-                "host", ip,
+                "timeout",
+                str(CHECK_DURATION),
+                "tcpdump",
+                "-nn",
+                "-q",
+                "-c",
+                str(MIN_PACKET_THRESHOLD),
+                "host",
+                ip,
             ]
             try:
                 result = subprocess.run(
@@ -424,7 +393,9 @@ def is_server_online(ip: str, port: int = 27015, timeout: float = 2.0) -> bool:
             sock.sendto(packet, (ip, port))
             data, _ = sock.recvfrom(4096)
             if data:
-                debug_log(f"Server online check: received {len(data)} bytes from {ip}:{port}")
+                debug_log(
+                    f"Server online check: received {len(data)} bytes from {ip}:{port}"
+                )
                 return True
             debug_log(f"Server online check: empty response from {ip}:{port}")
             return False
@@ -435,34 +406,44 @@ def is_server_online(ip: str, port: int = 27015, timeout: float = 2.0) -> bool:
         return False
 
 
-def extract_gmod_patch_tool(zip_path: str) -> str | None:
+def extract_gmod_patch_tool(zip_path: str, extract_to: str) -> str | None:
     # Normalize a downloaded archive into a clean GModPatchTool/ folder
     global GMOD_PATCH_TOOL_PATH
     try:
         with tempfile.TemporaryDirectory(prefix="gmodpatchtool_") as tmpdir:
             if zip_path.lower().endswith(".zip"):
-                with zipfile.ZipFile(zip_path, 'r') as zf:
+                with zipfile.ZipFile(zip_path, "r") as zf:
                     zf.extractall(tmpdir)
             else:
-                with tarfile.open(zip_path, 'r:*') as tf:
+                with tarfile.open(zip_path, "r:*") as tf:
                     tf.extractall(tmpdir)
 
             exe = find_executable_in_dir(tmpdir)
             if exe:
-                dest_folder = os.path.join(os.path.dirname(zip_path), "GModPatchTool")
+                dest_folder = os.path.join(
+                    os.path.dirname(zip_path), "GModPatchTool"
+                )
                 if os.path.exists(dest_folder):
                     shutil.rmtree(dest_folder)
                 shutil.copytree(os.path.dirname(exe), dest_folder)
 
-                GMOD_PATCH_TOOL_PATH = os.path.join(dest_folder, os.path.basename(exe))
+                GMOD_PATCH_TOOL_PATH = os.path.join(
+                    dest_folder, os.path.basename(exe)
+                )
                 try:
                     os.chmod(GMOD_PATCH_TOOL_PATH, 0o755)
                 except Exception as e:
-                    log_message(f"⚠️ [ERROR] Failed to set executable permission: {e}")
-                log_message(f"✅ [INFO] Extracted GModPatchTool to: {dest_folder}")
+                    log_message(
+                        f"⚠️ [ERROR] Failed to set executable permission: {e}"
+                    )
+                log_message(
+                    f"✅ [INFO] Extracted GModPatchTool to: {dest_folder}"
+                )
                 return dest_folder
             else:
-                log_message("⚠️ [ERROR] No executable found in the extracted archive.")
+                log_message(
+                    "⚠️ [ERROR] No executable found in the extracted archive."
+                )
                 return None
     except Exception as e:
         log_message(f"⚠️ [ERROR] Failed to extract archive: {e}")
@@ -478,17 +459,21 @@ def _select_platform_asset(assets: list[dict]) -> dict | None:
         name = a.get("name", "").lower()
         is_linux = "linux" in name
         is_windows = ("windows" in name) or name.endswith(".exe")
-        if os.name == 'nt' and is_windows:
+        if os.name == "nt" and is_windows:
             return a
-        if os.name != 'nt' and is_linux:
+        if os.name != "nt" and is_linux:
             return a
 
     for a in assets:
         name = a.get("name", "").lower()
-        if "gmodpatchtool" in name and name.endswith((".zip", ".tar.gz", ".tgz")):
-            if os.name == 'nt' and "linux" in name:
+        if "gmodpatchtool" in name and name.endswith(
+            (".zip", ".tar.gz", ".tgz")
+        ):
+            if os.name == "nt" and "linux" in name:
                 continue
-            if os.name != 'nt' and ("windows" in name or name.endswith(".exe")):
+            if os.name != "nt" and (
+                "windows" in name or name.endswith(".exe")
+            ):
                 continue
             return a
 
@@ -503,7 +488,11 @@ def _select_platform_asset(assets: list[dict]) -> dict | None:
 def auto_configure_gmod_patch_tool_path() -> str | None:
     # Try to locate an existing GModPatchTool installation or archive, otherwise download it
     global GMOD_PATCH_TOOL_PATH
-    if GMOD_PATCH_TOOL_PATH and os.path.exists(GMOD_PATCH_TOOL_PATH) and os.access(GMOD_PATCH_TOOL_PATH, os.X_OK):
+    if (
+        GMOD_PATCH_TOOL_PATH
+        and os.path.exists(GMOD_PATCH_TOOL_PATH)
+        and os.access(GMOD_PATCH_TOOL_PATH, os.X_OK)
+    ):
         return GMOD_PATCH_TOOL_PATH
 
     search_dirs = [SCRIPT_DIR]
@@ -530,21 +519,27 @@ def auto_configure_gmod_patch_tool_path() -> str | None:
                 if "gmodpatchtool" not in lname:
                     continue
                 if is_archive(path):
-                    if extract_gmod_patch_tool(path):
+                    if extract_gmod_patch_tool(
+                        path, extract_to=os.path.dirname(path)
+                    ):
                         return GMOD_PATCH_TOOL_PATH
                 else:
-                    if os.name == 'nt' and not lname.endswith(".exe"):
+                    if os.name == "nt" and not lname.endswith(".exe"):
                         continue
                     try:
                         os.chmod(path, 0o755)
                     except Exception:
                         pass
                     if os.access(path, os.X_OK):
-                        dest_folder = os.path.join(os.path.dirname(path), "GModPatchTool")
+                        dest_folder = os.path.join(
+                            os.path.dirname(path), "GModPatchTool"
+                        )
                         if os.path.exists(dest_folder):
                             shutil.rmtree(dest_folder)
                         os.makedirs(dest_folder, exist_ok=True)
-                        dest = os.path.join(dest_folder, os.path.basename(path))
+                        dest = os.path.join(
+                            dest_folder, os.path.basename(path)
+                        )
                         try:
                             shutil.copy2(path, dest)
                             os.chmod(dest, 0o755)
@@ -554,7 +549,9 @@ def auto_configure_gmod_patch_tool_path() -> str | None:
                         log_message(f"Found GModPatchTool at: {GMOD_PATCH_TOOL_PATH}")
                         return GMOD_PATCH_TOOL_PATH
 
-    log_message("GModPatchTool not found in common directories. Downloading latest patch...")
+    log_message(
+        "GModPatchTool not found in common directories. Downloading latest patch..."
+    )
     download_latest_gmod_patch_tool()
     return GMOD_PATCH_TOOL_PATH
 
@@ -580,7 +577,9 @@ def download_latest_gmod_patch_tool() -> None:
             timeout=10,
         )
     except Exception as e:
-        log_message(f"⚠️ [ERROR] Exception while fetching release info from GitHub: {e}")
+        log_message(
+            f"⚠️ [ERROR] Exception while fetching release info from GitHub: {e}"
+        )
         return
     if response.status_code != 200:
         log_message("⚠️ [ERROR] Failed to fetch release info from GitHub.")
@@ -616,7 +615,7 @@ def download_latest_gmod_patch_tool() -> None:
             f.write(r.content)
 
         if is_archive(out_path):
-            extract_gmod_patch_tool(out_path)
+            extract_gmod_patch_tool(out_path, extract_to=os.path.dirname(out_path))
         else:
             try:
                 os.chmod(out_path, 0o755)
@@ -634,7 +633,9 @@ def download_latest_gmod_patch_tool() -> None:
                 dest = out_path
             GMOD_PATCH_TOOL_PATH = dest
 
-        log_message(f"✅ [INFO] Downloaded latest patch asset for this platform: {name}")
+        log_message(
+            f"✅ [INFO] Downloaded latest patch asset for this platform: {name}"
+        )
     else:
         log_message("⚠️ [ERROR] Failed to download the patch.")
 
@@ -648,7 +649,9 @@ def check_for_new_patch_tool() -> None:
             timeout=10,
         )
     except Exception as e:
-        log_message(f"⚠️ [ERROR] Exception while fetching remote release info: {e}")
+        log_message(
+            f"⚠️ [ERROR] Exception while fetching remote release info: {e}"
+        )
         return
     if response.status_code != 200:
         log_message("⚠️ [ERROR] Failed to fetch release info from GitHub.")
@@ -662,7 +665,9 @@ def check_for_new_patch_tool() -> None:
 
     remote_created_at_str = data.get("created_at", None)
     if not remote_created_at_str:
-        log_message("⚠️ [ERROR] Remote release info did not contain a creation date.")
+        log_message(
+            "⚠️ [ERROR] Remote release info did not contain a creation date."
+        )
         return
     try:
         remote_date = datetime.strptime(remote_created_at_str, "%Y-%m-%dT%H:%M:%SZ")
@@ -671,21 +676,29 @@ def check_for_new_patch_tool() -> None:
         return
 
     if not GMOD_PATCH_TOOL_PATH or not os.path.exists(GMOD_PATCH_TOOL_PATH):
-        log_message("⚠️ [WARNING] Local patch file not found for update check.")
+        log_message(
+            "⚠️ [WARNING] Local patch file not found for update check."
+        )
         return
 
     try:
         local_timestamp = os.path.getmtime(GMOD_PATCH_TOOL_PATH)
         local_date = datetime.fromtimestamp(local_timestamp)
     except Exception as e:
-        log_message(f"⚠️ [ERROR] Could not get modification time for local patch: {e}")
+        log_message(
+            f"⚠️ [ERROR] Could not get modification time for local patch: {e}"
+        )
         return
 
     if remote_date > local_date:
-        log_message(f"🌍 [INFO] New patch available (remote: {remote_date}, local: {local_date}). Updating...")
+        log_message(
+            f"🌍 [INFO] New patch available (remote: {remote_date}, local: {local_date}). Updating..."
+        )
         asset = _select_platform_asset(data.get("assets", []))
         if not asset:
-            log_message("⚠️ [ERROR] No suitable patch asset found in the latest release.")
+            log_message(
+                "⚠️ [ERROR] No suitable patch asset found in the latest release."
+            )
             return
 
         asset_url = asset.get("browser_download_url")
@@ -697,12 +710,16 @@ def check_for_new_patch_tool() -> None:
         try:
             r = requests.get(asset_url, timeout=15)
             if r.status_code == 200:
-                out_path = os.path.join(os.path.dirname(GMOD_PATCH_TOOL_PATH) or SCRIPT_DIR, out_name)
+                out_path = os.path.join(
+                    os.path.dirname(GMOD_PATCH_TOOL_PATH) or SCRIPT_DIR, out_name
+                )
                 with open(out_path, "wb") as f:
                     f.write(r.content)
 
                 if is_archive(out_path):
-                    extract_gmod_patch_tool(out_path)
+                    extract_gmod_patch_tool(
+                        out_path, extract_to=os.path.dirname(out_path)
+                    )
                 else:
                     try:
                         os.chmod(out_path, 0o755)
@@ -710,13 +727,21 @@ def check_for_new_patch_tool() -> None:
                         pass
                     GMOD_PATCH_TOOL_PATH = out_path
 
-                log_message(f"✅ [INFO] Updated GModPatchTool to the latest platform asset: {out_name}")
+                log_message(
+                    f"✅ [INFO] Updated GModPatchTool to the latest platform asset: {out_name}"
+                )
             else:
-                log_message("⚠️ [ERROR] Failed to download the patch from GitHub.")
+                log_message(
+                    "⚠️ [ERROR] Failed to download the patch from GitHub."
+                )
         except Exception as e:
-            log_message(f"⚠️ [ERROR] Exception while downloading new patch: {e}")
+            log_message(
+                f"⚠️ [ERROR] Exception while downloading new patch: {e}"
+            )
     else:
-        log_message(f"✅ [INFO] Local patch is up-to-date (remote: {remote_date}, local: {local_date}).")
+        log_message(
+            f"✅ [INFO] Local patch is up-to-date (remote: {remote_date}, local: {local_date})."
+        )
 
 
 def _pid_alive(pid: int) -> bool:
@@ -731,7 +756,7 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _try_kill_pid(pid: int, desc: str = "GModPatchTool") -> bool:
-    # Try to terminate a conflicting GModPatchTool process (SIGTERM then SIGKILL/Windows-safe)
+    # Try to terminate a conflicting GModPatchTool process (SIGTERM then SIGKILL)
     try:
         os.kill(pid, signal.SIGTERM)
     except Exception:
@@ -741,15 +766,14 @@ def _try_kill_pid(pid: int, desc: str = "GModPatchTool") -> bool:
             return True
         time.sleep(0.2)
 
-    if os.name != 'nt':
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except Exception:
-            pass
-        for _ in range(10):
-            if not _pid_alive(pid):
-                return True
-            time.sleep(0.2)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except Exception:
+        pass
+    for _ in range(10):
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.2)
 
     return not _pid_alive(pid)
 
@@ -772,11 +796,15 @@ def _preclear_stale_instance(tool_path: str) -> None:
 
             if pid:
                 if _pid_alive(pid):
-                    log_message(f"🔒 [INFO] Another GModPatchTool instance appears active (pid {pid}); attempting to stop it...")
+                    log_message(
+                        f"🔒 [INFO] Another GModPatchTool instance appears active (pid {pid}); attempting to stop it..."
+                    )
                     if _try_kill_pid(pid):
                         log_message("✅ [INFO] Stale GModPatchTool instance stopped.")
                     else:
-                        log_message("⚠️ [WARNING] Could not stop existing GModPatchTool cleanly.")
+                        log_message(
+                            "⚠️ [WARNING] Could not stop existing GModPatchTool cleanly."
+                        )
                 else:
                     log_message("🧹 [INFO] Removing stale GModPatchTool pid file.")
             try:
@@ -785,19 +813,62 @@ def _preclear_stale_instance(tool_path: str) -> None:
                 pass
 
 
+def ensure_gmod_closed_for_patch() -> None:
+    # Make sure Garry's Mod is not running before we invoke GModPatchTool
+    if not is_gmod_running():
+        return
+
+    log_message(
+        "🧹 [INFO] GMod is currently running; closing it before running GModPatchTool..."
+    )
+
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "gmod.exe"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            subprocess.run(
+                ["pkill", "-9", "gmod"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except Exception as e:
+        debug_log(f"Error closing GMod before patch: {e}")
+
+    for _ in range(20):
+        if not is_gmod_running():
+            log_message("✅ [INFO] GMod is closed; safe to run GModPatchTool now.")
+            return
+        time.sleep(0.5)
+
+    if is_gmod_running():
+        log_message(
+            "⚠️ [WARNING] GMod still appears to be running after attempting to close it. "
+            "GModPatchTool may refuse to run."
+        )
+
+
 def run_gmod_patch_tool() -> bool:
-    # Execute GModPatchTool and interpret its output according to our policy
+    # Execute GModPatchTool via pexpect and interpret its output according to our policy
     if not ensure_gmod_patch_tool_ready():
         return False
 
-    log_message("🛠 [INFO] Running GModPatchTool...")
+    # Always make sure GMod is closed before patching
+    ensure_gmod_closed_for_patch()
+
+    log_message("🛠 [INFO] Running GModPatchTool with pexpect...")
     check_for_new_patch_tool()
 
     if not GMOD_PATCH_TOOL_PATH or not os.path.exists(GMOD_PATCH_TOOL_PATH):
         log_message("⚠️ [ERROR] GModPatchTool not found on disk after update check.")
         return False
-    if not os.access(GMOD_PATCH_TOOL_PATH, os.X_OK) and os.name != 'nt':
-        log_message("⚠️ [ERROR] GModPatchTool is not executable. Attempting to set executable permission.")
+    if not os.access(GMOD_PATCH_TOOL_PATH, os.X_OK) and os.name != "nt":
+        log_message(
+            "⚠️ [ERROR] GModPatchTool is not executable. Attempting to set executable permission."
+        )
         try:
             os.chmod(GMOD_PATCH_TOOL_PATH, 0o755)
         except Exception as e:
@@ -806,107 +877,14 @@ def run_gmod_patch_tool() -> bool:
 
     _preclear_stale_instance(GMOD_PATCH_TOOL_PATH)
 
-    def _run_windows(allow_retry_on_already_running: bool) -> bool:
-        # Windows: run via subprocess, stream output, and parse for success/locked-instance
-        spawn_cmd = GMOD_PATCH_TOOL_PATH
-        try:
-            proc = subprocess.Popen(
-                [spawn_cmd],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-            )
-        except Exception as e:
-            log_message(f"⚠️ [ERROR] Failed to spawn GModPatchTool on Windows: {e}")
-            return False
-
-        output = ""
-        start_time = time.time()
-
-        while True:
-            if proc.stdout is None:
-                break
-
-            line = proc.stdout.readline()
-            if not line:
-                # If process ended, break; else just loop until timeout
-                if proc.poll() is not None:
-                    break
-            else:
-                # Echo GModPatchTool’s output into this console
-                print(line, end="")
-                output += line
-
-                # Respond to prompts if present
-                if "Launch Garry's Mod" in line:
-                    try:
-                        proc.stdin.write("n\n")
-                        proc.stdin.flush()
-                    except Exception:
-                        pass
-                if "Press Enter to exit" in line:
-                    try:
-                        proc.stdin.write("\n")
-                        proc.stdin.flush()
-                    except Exception:
-                        pass
-
-            # Enforce a hard timeout
-            if time.time() - start_time > 300:
-                log_message("⚠️ [ERROR] GModPatchTool timed out in subprocess mode (Windows).")
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-                break
-
-        try:
-            proc.wait(timeout=5)
-        except Exception:
-            pass
-
-        # Look for "already running" message
-        already_match = re.search(
-            r"Another instance of GModPatchTool is already running \((\d+)\)\.",
-            output,
-        )
-        success_match = re.search(
-            r"GModPatchTool applied successfully!|Patch applied successfully",
-            output,
-        )
-
-        if already_match:
-            pid_text = already_match.group(1)
-            try:
-                stale_pid = int(pid_text)
-            except Exception:
-                stale_pid = None
-
-            if stale_pid:
-                if _try_kill_pid(stale_pid):
-                    log_message(f"✅ [INFO] Cleared running GModPatchTool instance (pid {stale_pid}).")
-                else:
-                    log_message(f"⚠️ [WARNING] Could not stop running instance (pid {stale_pid}).")
-
-            if allow_retry_on_already_running:
-                log_message("🔁 [INFO] Retrying GModPatchTool after clearing running instance...")
-                return _run_windows(False)
-            else:
-                return False
-
-        if success_match:
-            log_message("✅ [INFO] GModPatchTool applied successfully (subprocess, Windows).")
-            return True
-
-        log_message("⚠️ [INFO] Patch tool exited without success on Windows; will follow policy thresholds.")
-        return False
-
-    def _run_posix(allow_retry_on_already_running: bool) -> bool:
-        # POSIX: original pexpect-based runner
-        spawn_cmd = GMOD_PATCH_TOOL_PATH
-        spawn_args: list[str] = []
+    def _spawn_and_watch(allow_retry_on_already_running: bool) -> bool:
+        # Core runner for the patch tool with optional retry when another instance is active
+        if os.name == "nt":
+            spawn_cmd = GMOD_PATCH_TOOL_PATH
+            spawn_args: list[str] = []
+        else:
+            spawn_cmd = GMOD_PATCH_TOOL_PATH
+            spawn_args = []
 
         debug_log(
             f"Spawning GModPatchTool: cmd={spawn_cmd}, args={spawn_args}, "
@@ -918,19 +896,29 @@ def run_gmod_patch_tool() -> bool:
             log_message(f"⚠️ [ERROR] Failed to spawn GModPatchTool: {e}")
             return False
 
-        # Mirror child output into this console
         child.logfile = sys.stdout.buffer
 
-        already_running_pat = r"Another instance of GModPatchTool is already running \((\d+)\)\."
-        success_pats = [r"GModPatchTool applied successfully!", r"Patch applied successfully"]
+        already_running_pat = (
+            r"Another instance of GModPatchTool is already running \((\d+)\)\."
+        )
+        gmod_running_error_pat = (
+            r"ERROR Garry's Mod is currently running\. Please close it before running this tool\."
+        )
+        success_pats = [
+            r"GModPatchTool applied successfully!",
+            r"Patch applied successfully",
+        ]
 
         try:
             idx = child.expect(
-                [already_running_pat] + success_pats + [r"Press Enter to exit\.\.\."],
+                [already_running_pat, gmod_running_error_pat]
+                + success_pats
+                + [r"Press Enter to exit\.\.\."],
                 timeout=300,
             )
 
             if idx == 0:
+                # Another instance of GModPatchTool is running
                 pid_text = child.match.group(1)
                 if isinstance(pid_text, bytes):
                     pid_text = pid_text.decode(errors="ignore")
@@ -950,24 +938,57 @@ def run_gmod_patch_tool() -> bool:
 
                 if stale_pid:
                     if _try_kill_pid(stale_pid):
-                        log_message(f"✅ [INFO] Cleared running GModPatchTool instance (pid {stale_pid}).")
+                        log_message(
+                            f"✅ [INFO] Cleared running GModPatchTool instance (pid {stale_pid})."
+                        )
                     else:
-                        log_message(f"⚠️ [WARNING] Could not stop running instance (pid {stale_pid}).")
+                        log_message(
+                            f"⚠️ [WARNING] Could not stop running instance (pid {stale_pid})."
+                        )
 
                 if allow_retry_on_already_running:
-                    log_message("🔁 [INFO] Retrying GModPatchTool after clearing running instance...")
-                    return _run_posix(False)
+                    log_message(
+                        "🔁 [INFO] Retrying GModPatchTool after clearing running instance..."
+                    )
+                    return _spawn_and_watch(False)
                 else:
                     return False
 
-            elif idx in (1, 2):
+            elif idx == 1:
+                # Patch tool reports that GMod is running; close GMod and retry once
+                log_message(
+                    "⚠️ [INFO] GModPatchTool reported that Garry's Mod is currently running; "
+                    "closing GMod and retrying patch once."
+                )
+                try:
+                    child.sendline("")
+                except Exception:
+                    pass
+                try:
+                    child.close(force=True)
+                except Exception:
+                    pass
+
+                ensure_gmod_closed_for_patch()
+
+                if allow_retry_on_already_running:
+                    log_message("🔁 [INFO] Retrying GModPatchTool after closing GMod...")
+                    return _spawn_and_watch(False)
+                else:
+                    return False
+
+            elif idx in (2, 3):
+                # Patch success patterns
                 try:
                     child.sendline("")
                 except Exception:
                     pass
 
                 try:
-                    child.expect([r"Launch Garry's Mod", pexpect.EOF, pexpect.TIMEOUT], timeout=5)
+                    child.expect(
+                        ["Launch Garry's Mod", pexpect.EOF, pexpect.TIMEOUT],
+                        timeout=5,
+                    )
                     if child.after not in (pexpect.EOF, pexpect.TIMEOUT):
                         try:
                             child.sendline("n")
@@ -984,6 +1005,7 @@ def run_gmod_patch_tool() -> bool:
                 return True
 
             else:
+                # "Press Enter to exit..." or unclassified case
                 try:
                     child.sendline("")
                 except Exception:
@@ -992,7 +1014,9 @@ def run_gmod_patch_tool() -> bool:
                     child.close(force=True)
                 except Exception:
                     pass
-                log_message("⚠️ [INFO] Patch tool exited without success; will follow policy thresholds.")
+                log_message(
+                    "⚠️ [INFO] Patch tool exited without success; will follow policy thresholds."
+                )
                 return False
 
         except pexpect.TIMEOUT:
@@ -1019,145 +1043,27 @@ def run_gmod_patch_tool() -> bool:
             log_message(f"⚠️ [ERROR] Exception in pexpect patch run: {e}")
             return False
 
-    if os.name == 'nt':
-        return _run_windows(True)
-    else:
-        return _run_posix(True)
-
-
-def enter_catastrophic_mode(reason: str) -> None:
-    """
-    Enter catastrophic backoff mode:
-    - Stop all patch/validate/relaunch activity.
-    - Wait for CATASTROPHIC_BACKOFF_SECONDS before resuming normal behavior.
-    """
-    global catastrophic_mode, catastrophic_since
-    global failure_ticks, patch_triggered_after_failures, post_patch_failure_attempts
-    global validated_and_patched_recently, had_success_since_validate
-
-    if catastrophic_mode:
-        return
-
-    catastrophic_mode = True    # we intentionally DO NOT clear patch_required_before_launch here
-    catastrophic_since = time.time()
-
-    log_message(f"❌ [INFO] {reason}")
-    log_message(
-        f"⏱️ [INFO] Entering catastrophic backoff mode for "
-        f"{CATASTROPHIC_BACKOFF_SECONDS // 60} minutes. "
-        "Automatic patch/validate/relaunch will pause until the backoff window ends."
-    )
-
-
-def record_failure(reason: str, server_online: bool) -> None:
-    """
-    Handle a single connection failure tick while the server is online.
-
-    This increments failure_ticks, logs the reason, and applies the same
-    patch/validate escalation policy used across the script.
-
-    IMPORTANT:
-    - Validation is only triggered once per failure window after patching.
-    - No infinite validate-and-retry loops.
-    - If failures explode, enter catastrophic backoff mode and pause
-      remediation for an hour.
-    """
-    global failure_ticks, patch_triggered_after_failures, post_patch_failure_attempts
-    global validated_and_patched_recently, had_success_since_validate
-    global catastrophic_mode
-
-    if catastrophic_mode:
-        log_message("⚠️ [INFO] In catastrophic backoff mode; ignoring additional failures for now.")
-        return
-
-    failure_ticks += 1
-    log_message(
-        f"⚠️ [INFO] {reason} (failure #{failure_ticks} while server is online)."
-    )
-
-    # If we've reached the catastrophic cap, stop here and enter backoff mode.
-    if failure_ticks >= MAX_FAILURES_PER_WINDOW:
-        enter_catastrophic_mode(
-            "Maximum failures reached in this recovery window without a stable connection."
-        )
-        return
-
-    if failure_ticks == 1:
-        log_message(
-            "⚠️ [INFO] First failed connection-related check while server is online. "
-            "Will keep monitoring before taking action."
-        )
-    elif failure_ticks == PATCH_FAILURE_THRESHOLD:
-        log_message(
-            f"⚠️ [INFO] Failure count has reached {PATCH_FAILURE_THRESHOLD}. "
-            "Triggering patch and considering a relaunch if needed."
-        )
-    elif failure_ticks % PATCH_FAILURE_THRESHOLD == 0:
-        log_message(
-            f"⚠️ [INFO] Ongoing issues: {failure_ticks} failed checks in a row while server is online."
-        )
-
-    # After a patch has already been applied
-    if patch_triggered_after_failures:
-        post_patch_failure_attempts += 1
-        log_message(
-            f"⚠️ [INFO] Still failing after patch; post-patch failure count: "
-            f"{post_patch_failure_attempts}."
-        )
-
-        # Only trigger validation if we haven't already validated in this window
-        if (not validated_and_patched_recently
-                and post_patch_failure_attempts >= POST_PATCH_VALIDATION_THRESHOLD):
-            log_message(
-                "⚠️ [INFO] Post-patch failures exceeded threshold; performing validate+patch cycle."
-            )
-            validate_and_restart_gmod()
-            # After validation we consider this a new window: reset counters.
-            failure_ticks = 0
-            post_patch_failure_attempts = 0
-    else:
-        # First-time patch escalation for this failure window
-        if failure_ticks >= PATCH_FAILURE_THRESHOLD:
-            if run_gmod_patch_tool():
-                patch_triggered_after_failures = True
-                post_patch_failure_attempts = 0
-                log_message(
-                    "✅ [INFO] Patch applied after repeated failures; "
-                    "watching for a successful reconnect."
-                )
-            else:
-                log_message(
-                    "⚠️ [ERROR] Patch tool failed after repeated failures; "
-                    "will continue monitoring and may escalate to validation."
-                )
-
-    # If we've hit the failure threshold with server online, relaunch
-    if server_online and failure_ticks >= PATCH_FAILURE_THRESHOLD:
-        if patch_triggered_after_failures:
-            log_message(
-                "🚀 [INFO] Repeated failures while the server was online; "
-                "relaunching GMod after applying patch..."
-            )
-        else:
-            log_message(
-                "🚀 [INFO] Repeated failures while the server is online; "
-                "relaunching GMod..."
-            )
-        launch_gmod()
+    return _spawn_and_watch(True)
 
 
 def launch_gmod() -> None:
     # Launch GMod via Steam and connect to the current server IP, replacing any existing instance
     global patch_required_before_launch, last_launch_time
-    global gmod_seen_since_launch, healthy_since_launch
+    global saw_gmod_since_last_launch, launch_failures
 
     if not server_ip:
         log_message("⚠️ [ERROR] No valid server IP. Cannot launch GMod.")
         return
 
+    # Reset launch-tracking state for this attempt (but do NOT reset launch_failures here)
+    saw_gmod_since_last_launch = False
+
+    # Close any existing GMod instance before relaunch
     if is_gmod_running():
-        log_message("🧹 [INFO] Existing GMod instance detected; attempting to close it before relaunch.")
-        if os.name == 'nt':
+        log_message(
+            "🧹 [INFO] Existing GMod instance detected; attempting to close it before relaunch."
+        )
+        if os.name == "nt":
             try:
                 subprocess.run(
                     ["taskkill", "/F", "/IM", "gmod.exe"],
@@ -1177,32 +1083,147 @@ def launch_gmod() -> None:
                 debug_log(f"Error during pkill in launch_gmod: {e}")
         time.sleep(2)
 
+    # Run required patch first if flagged
     if patch_required_before_launch:
         log_message("🛠 [INFO] Applying required patch before launching GMod...")
         if not run_gmod_patch_tool():
-            log_message("⚠️ [ERROR] Patch tool failed to run before reconnect attempt. Aborting launch.")
+            log_message(
+                "⚠️ [ERROR] Patch tool failed to run before reconnect attempt. Aborting launch."
+            )
             return
         patch_required_before_launch = False
 
-    log_message(f"🚀 [INFO] Launching GMod & connecting to {server_ip}:27015...")
     steam_uri = GMOD_STEAM_URI.format(server_ip=server_ip)
-    if os.name == 'nt':
-        subprocess.run(
-            ["cmd", "/c", "start", "", steam_uri],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+    log_message(f"🚀 [INFO] Launching GMod & connecting to {server_ip}:27015...")
+
+    if os.name == "nt":
+        # Windows: use the steam:// URI handler
+        try:
+            subprocess.run(
+                ["cmd", "/c", "start", steam_uri],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            log_message(
+                f"⚠️ [ERROR] Failed to launch GMod via steam URI on Windows: {e}"
+            )
+            return
+    else:
+        # Linux: prefer Steam CLI first, then CLI -applaunch, and use xdg-open as a last resort
+        linux_launch_succeeded = False
+        steam_bin = shutil.which("steam")
+
+        # Primary: Steam CLI with connect URI
+        if steam_bin:
+            try:
+                log_message('📄 [INFO] Trying Steam CLI: steam "steam://connect/..."')
+                result = subprocess.run(
+                    [steam_bin, steam_uri],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    linux_launch_succeeded = True
+                    log_message("🟢 [INFO] Steam CLI accepted the connect URI.")
+                else:
+                    log_message(
+                        f"⚠️ [WARNING] Steam CLI connect URI returned code {result.returncode}. "
+                        "Will try -applaunch fallback."
+                    )
+                    if result.stderr:
+                        debug_log(f"steam stderr: {result.stderr.strip()}")
+            except Exception as e:
+                log_message(f"⚠️ [ERROR] Exception calling Steam CLI with URI: {e}")
+        else:
+            log_message(
+                "⚠️ [WARNING] Steam binary not found in PATH; skipping Steam CLI URI attempt."
+            )
+
+        # Fallback #2: steam -applaunch 4000 +connect ip:port
+        if not linux_launch_succeeded and steam_bin:
+            try:
+                log_message(
+                    "🔁 [INFO] Trying Steam CLI fallback: steam -applaunch 4000 +connect ip:port"
+                )
+                result2 = subprocess.run(
+                    [steam_bin, "-applaunch", "4000", "+connect", f"{server_ip}:27015"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                if result2.returncode == 0:
+                    linux_launch_succeeded = True
+                    log_message("🟢 [INFO] Steam CLI -applaunch 4000 +connect executed.")
+                else:
+                    log_message(
+                        f"⚠️ [WARNING] Steam -applaunch fallback returned code {result2.returncode}. "
+                        "Will try xdg-open as last resort."
+                    )
+                    if result2.stderr:
+                        debug_log(
+                            f"steam -applaunch stderr: {result2.stderr.strip()}"
+                        )
+            except Exception as e:
+                log_message(
+                    f"⚠️ [ERROR] Exception calling Steam -applaunch fallback: {e}"
+                )
+
+        # Last resort: xdg-open steam://connect/...
+        if not linux_launch_succeeded:
+            try:
+                log_message(
+                    "🔁 [INFO] Trying xdg-open fallback for steam:// URI handler..."
+                )
+                result3 = subprocess.run(
+                    ["xdg-open", steam_uri],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                if result3.returncode == 0:
+                    linux_launch_succeeded = True
+                    log_message(
+                        "🟢 [INFO] xdg-open successfully invoked the steam:// handler."
+                    )
+                else:
+                    log_message(
+                        f"⚠️ [ERROR] xdg-open returned non-zero exit code ({result3.returncode}). "
+                        "GMod may not have launched correctly."
+                    )
+                    if result3.stderr:
+                        debug_log(f"xdg-open stderr: {result3.stderr.strip()}")
+            except Exception as e:
+                log_message(f"⚠️ [ERROR] Exception calling xdg-open fallback: {e}")
+
+        if not linux_launch_succeeded:
+            log_message(
+                "⚠️ [ERROR] All Linux launch methods failed (Steam CLI URI, -applaunch, xdg-open). "
+                "Check Steam installation, PATH, and URI handlers."
+            )
+
+    # Record launch time for grace window
+    last_launch_time = time.time()
+
+    # Give GMod some time to start; then verify that the process is visible
+    time.sleep(10)
+    if not is_gmod_running():
+        log_message(
+            "⚠️ [WARNING] After attempting to launch, GMod is still not detected as running.\n"
+            "   - If Steam popped up and GMod opened then closed immediately, this may be a game/Steam issue.\n"
+            "   - If nothing at all opened, the steam:// handler or PROCESS_NAMES may need adjustment."
+        )
+        debug_log(
+            "If GMod actually is running here, check the process name with 'ps aux | grep -i gmod' "
+            "and add it to PROCESS_NAMES in the script."
         )
     else:
-        subprocess.run(
-            ["xdg-open", steam_uri],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        saw_gmod_since_last_launch = True
+        log_message("🟢 [INFO] GMod appears to be running after launch attempt.")
 
-    last_launch_time = time.time()
-    gmod_seen_since_launch = False
-    healthy_since_launch = False
-    time.sleep(30)
+    # Short extra delay before connection checks continue
+    time.sleep(5)
 
 
 def validate_and_restart_gmod() -> None:
@@ -1212,7 +1233,7 @@ def validate_and_restart_gmod() -> None:
     log_message("🔄 [INFO] Restarting GMod & verifying game files...")
     patch_required_before_launch = True
 
-    if os.name == 'nt':
+    if os.name == "nt":
         try:
             subprocess.run(
                 ["taskkill", "/F", "/IM", "gmod.exe"],
@@ -1222,7 +1243,7 @@ def validate_and_restart_gmod() -> None:
         except Exception as e:
             debug_log(f"Error during taskkill: {e}")
         subprocess.run(
-            ["cmd", "/c", "start", "", GMOD_VALIDATE_URI],
+            ["cmd", "/c", "start", GMOD_VALIDATE_URI],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -1241,7 +1262,9 @@ def validate_and_restart_gmod() -> None:
     time.sleep(45)
 
     if not run_gmod_patch_tool():
-        log_message("⚠️ [ERROR] GModPatchTool did not apply successfully after validation.")
+        log_message(
+            "⚠️ [ERROR] GModPatchTool did not apply successfully after validation."
+        )
     else:
         patch_required_before_launch = False
         validated_and_patched_recently = True
@@ -1252,7 +1275,7 @@ def main() -> None:
     # Main control loop for Swamp reconnect behavior and escalation policy
     global server_ip, failure_ticks, patch_triggered_after_failures, post_patch_failure_attempts
     global validated_and_patched_recently, had_success_since_validate, loop_count, last_launch_time
-    global gmod_seen_since_launch, healthy_since_launch, catastrophic_mode, catastrophic_since
+    global launch_failures, saw_gmod_since_last_launch
 
     auto_configure_gmod_patch_tool_path()
     check_dependencies()
@@ -1261,8 +1284,7 @@ def main() -> None:
     log_message(f"🚀 [INFO] Swamp reconnect script started (version {__version__}).")
     log_message(
         f"📋 [INFO] Policy: patch after {PATCH_FAILURE_THRESHOLD} failures, "
-        f"validate+patch after {POST_PATCH_VALIDATION_THRESHOLD} post-patch failures, "
-        f"catastrophic backoff after {MAX_FAILURES_PER_WINDOW} total failures."
+        f"validate+patch after {POST_PATCH_VALIDATION_THRESHOLD} post-patch failures."
     )
     log_message("📡 [INFO] Waiting for Swamp server IP and monitoring GMod status.")
     log_message("👉 [INFO] Press Ctrl+C at any time to stop the script.")
@@ -1271,39 +1293,15 @@ def main() -> None:
     while True:
         try:
             loop_count += 1
-
-            # If we're in catastrophic backoff, enforce the cooldown first
-            if catastrophic_mode:
-                now = time.time()
-                elapsed = now - catastrophic_since if catastrophic_since else 0
-                if elapsed < CATASTROPHIC_BACKOFF_SECONDS:
-                    # Still cooling down; do nothing except sleep.
-                    time.sleep(CHECK_INTERVAL)
-                    continue
-                else:
-                    # Backoff window elapsed; reset state and resume normal behavior.
-                    catastrophic_mode = False
-                    catastrophic_since = None
-                    failure_ticks = 0
-                    patch_triggered_after_failures = False
-                    post_patch_failure_attempts = 0
-                    validated_and_patched_recently = False
-                    had_success_since_validate = False
-                    last_launch_time = None
-                    gmod_seen_since_launch = False
-                    healthy_since_launch = False
-                    log_message(
-                        "⏱️ [INFO] Catastrophic backoff window elapsed; "
-                        "resuming normal recovery behavior."
-                    )
-
             gmod_running = is_gmod_running()
 
             if server_ip is None:
                 fetch_server_ip()
 
             if server_ip is None:
-                log_message("⚠️ [WARNING] No server IP detected yet; will retry shortly...")
+                log_message(
+                    "⚠️ [WARNING] No server IP detected yet; will retry shortly..."
+                )
                 time.sleep(CHECK_INTERVAL)
                 continue
 
@@ -1320,13 +1318,6 @@ def main() -> None:
 
             healthy = gmod_running and connected
 
-            # Track per-launch state:
-            if gmod_running:
-                gmod_seen_since_launch = True
-
-            if healthy:
-                healthy_since_launch = True
-
             debug_log(
                 f"Loop={loop_count}, gmod_running={gmod_running}, server_ip={server_ip}, "
                 f"server_online={server_online}, connected={connected}, "
@@ -1336,9 +1327,8 @@ def main() -> None:
                 f"validated_and_patched_recently={validated_and_patched_recently}, "
                 f"had_success_since_validate={had_success_since_validate}, "
                 f"last_launch_time={last_launch_time}, "
-                f"gmod_seen_since_launch={gmod_seen_since_launch}, "
-                f"healthy_since_launch={healthy_since_launch}, "
-                f"catastrophic_mode={catastrophic_mode}"
+                f"launch_failures={launch_failures}, "
+                f"saw_gmod_since_last_launch={saw_gmod_since_last_launch}"
             )
 
             if healthy:
@@ -1347,19 +1337,18 @@ def main() -> None:
                 log_state_change(
                     "connection",
                     True,
-                    "🟢 [INFO] UDP traffic to Swamp server detected. Connection looks healthy."
+                    "🟢 [INFO] UDP traffic to Swamp server detected. Connection looks healthy.",
                 )
                 failure_ticks = 0
                 patch_triggered_after_failures = False
                 post_patch_failure_attempts = 0
+                launch_failures = 0  # Reset launch failures on a truly healthy connection
 
-                if validated_and_patched_recently:
-                    if not had_success_since_validate:
-                        had_success_since_validate = True
-                        log_message("✅ [INFO] Successful connection after validation+patch.")
-                    # Close this validation window so future issues can validate again.
-                    validated_and_patched_recently = False
-                    post_patch_failure_attempts = 0
+                if validated_and_patched_recently and not had_success_since_validate:
+                    had_success_since_validate = True
+                    log_message(
+                        "✅ [INFO] Successful connection after validation+patch."
+                    )
 
             else:
                 # Not healthy: either server offline, or client down, or running-but-disconnected
@@ -1378,11 +1367,12 @@ def main() -> None:
                     log_state_change(
                         "connection",
                         False,
-                        "🔴 [INFO] No UDP traffic and server appears offline."
+                        "🔴 [INFO] No UDP traffic and server appears offline.",
                     )
                     failure_ticks = 0
                     patch_triggered_after_failures = False
                     post_patch_failure_attempts = 0
+                    launch_failures = 0
                     time.sleep(CHECK_INTERVAL)
                     continue
 
@@ -1392,66 +1382,56 @@ def main() -> None:
                     log_state_change(
                         "gmod",
                         False,
-                        "🟡 [INFO] GMod is not running while the Swamp server is online."
+                        "🟡 [INFO] GMod is not running while the Swamp server is online.",
                     )
                     log_state_change(
                         "connection",
                         False,
-                        "🔴 [INFO] No UDP traffic to Swamp server while it is online."
+                        "🔴 [INFO] No UDP traffic to Swamp server while it is online.",
                     )
 
-                    now = time.time()
+                    # Detect early-crash / launch failure loop and escalate to validation after 3 tries
+                    elapsed_since_launch = None
+                    if last_launch_time is not None:
+                        elapsed_since_launch = time.time() - last_launch_time
 
-                    # Case 1: We've never launched GMod from this script yet
-                    if last_launch_time is None:
+                    if (
+                        elapsed_since_launch is not None
+                        and elapsed_since_launch <= LAUNCH_GRACE_SECONDS
+                    ):
+                        launch_failures += 1
                         log_message(
-                            "🚀 [INFO] Swamp server is online but GMod is not running; launching GMod..."
+                            f"⚠️ [INFO] GMod exited early after launch (launch failure {launch_failures}/3 "
+                            f"within ~{LAUNCH_GRACE_SECONDS}s)."
                         )
-                        launch_gmod()
+
+                        if launch_failures >= 3:
+                            log_message(
+                                "⚠️ [INFO] Detected repeated early crashes after launch; "
+                                "triggering game file validation and patch."
+                            )
+                            validate_and_restart_gmod()
+                            failure_ticks = 0
+                            post_patch_failure_attempts = 0
+                            last_launch_time = None
+                            saw_gmod_since_last_launch = False
+                            launch_failures = 0
+                        else:
+                            log_message(
+                                "🚀 [INFO] Trying to launch GMod again after early exit..."
+                            )
+                            launch_gmod()
+
                         time.sleep(CHECK_INTERVAL)
                         continue
 
-                    since_launch = now - last_launch_time
-
-                    # Case 2: We launched recently and are still within the grace window
-                    if since_launch < LAUNCH_GRACE_SECONDS:
-                        remaining = max(0, int(LAUNCH_GRACE_SECONDS - since_launch))
-                        log_message(
-                            f"⏳ [INFO] GMod was launched recently; giving it more time to start before "
-                            f"treating this as a failure (~{remaining}s grace left)."
-                        )
-                        time.sleep(CHECK_INTERVAL)
-                        continue
-
-                    # Case 3: Grace window expired and GMod is still not running.
-                    # Now decide if this counts as a failure tick.
-
-                    if healthy_since_launch:
-                        # GMod connected successfully at least once after the last launch,
-                        # so this looks like a normal shutdown / user close.
-                        # Relaunch without treating it as a connection failure.
-                        log_message(
-                            "🔁 [INFO] GMod previously reached a healthy connection this launch; "
-                            "treating shutdown as a normal close and relaunching."
-                        )
-                        launch_gmod()
-                        time.sleep(CHECK_INTERVAL)
-                        continue
-
-                    if gmod_seen_since_launch:
-                        # GMod actually started but never connected and then died → failure tick.
-                        record_failure(
-                            "GMod started but closed before establishing a healthy connection",
-                            server_online=True,
-                        )
-                    else:
-                        # We never even saw the process; treat this as a failure too,
-                        # since Steam/launching appears broken.
-                        record_failure(
-                            "GMod failed to start within the grace window after launch",
-                            server_online=True,
-                        )
-
+                    # No recent launch or exit outside the early-crash window: treat as a fresh launch
+                    launch_failures = 0
+                    saw_gmod_since_last_launch = False
+                    log_message(
+                        "🚀 [INFO] Swamp server is online but GMod is not running; launching GMod..."
+                    )
+                    launch_gmod()
                     time.sleep(CHECK_INTERVAL)
                     continue
 
@@ -1459,32 +1439,103 @@ def main() -> None:
                 log_state_change(
                     "gmod",
                     True,
-                    "🟡 [INFO] GMod is running but appears disconnected from the server."
+                    "🟡 [INFO] GMod is running but appears disconnected from the server.",
                 )
                 log_state_change(
                     "connection",
                     False,
-                    "🔴 [INFO] No UDP traffic to Swamp server while it is online."
+                    "🔴 [INFO] No UDP traffic to Swamp server while it is online.",
                 )
 
                 # If we just launched GMod from this script, allow a grace period before counting failures
-                if last_launch_time is not None and (time.time() - last_launch_time) < LAUNCH_GRACE_SECONDS:
-                    remaining = max(0, int(LAUNCH_GRACE_SECONDS - (time.time() - last_launch_time)))
+                if last_launch_time is not None and (
+                    time.time() - last_launch_time
+                ) < LAUNCH_GRACE_SECONDS:
+                    remaining = max(
+                        0,
+                        int(
+                            LAUNCH_GRACE_SECONDS
+                            - (time.time() - last_launch_time)
+                        ),
+                    )
                     log_message(
                         f"⏳ [INFO] Recently relaunched GMod; allowing time for the client to start and connect "
-                        f"(~{remaining}s grace left)..."
+                        f"before treating this as a failure (~{remaining}s grace left)."
                     )
                     time.sleep(CHECK_INTERVAL)
                     continue
 
                 # Now we treat this as a *real* failure tick (GMod running but disconnected)
-                record_failure(
-                    "GMod is running but cannot establish/maintain UDP traffic to the Swamp server",
-                    server_online=True,
-                )
+                failure_ticks += 1
+                if failure_ticks == 1:
+                    log_message(
+                        "⚠️ [INFO] First failed connection check while server is online. "
+                        "Will keep monitoring before taking action."
+                    )
+                elif failure_ticks == PATCH_FAILURE_THRESHOLD:
+                    log_message(
+                        f"⚠️ [INFO] Failure count has reached {PATCH_FAILURE_THRESHOLD}. "
+                        "Triggering patch and considering a relaunch if needed."
+                    )
+                elif failure_ticks % PATCH_FAILURE_THRESHOLD == 0:
+                    log_message(
+                        f"⚠️ [INFO] Ongoing issues: {failure_ticks} failed checks in a row while server is online."
+                    )
 
-                time.sleep(CHECK_INTERVAL)
-                continue
+                # Post-patch failure handling
+                if patch_triggered_after_failures:
+                    post_patch_failure_attempts += 1
+                    log_message(
+                        f"⚠️ [INFO] Still failing after patch; post-patch failure count: "
+                        f"{post_patch_failure_attempts}."
+                    )
+
+                    if validated_and_patched_recently and not had_success_since_validate:
+                        log_message(
+                            "⚠️ [INFO] Failure after recent validation+patch; "
+                            "escalating immediately to validate_and_restart_gmod()."
+                        )
+                        validate_and_restart_gmod()
+                        failure_ticks = 0
+                        post_patch_failure_attempts = 0
+                    elif (
+                        post_patch_failure_attempts
+                        >= POST_PATCH_VALIDATION_THRESHOLD
+                    ):
+                        log_message(
+                            "⚠️ [INFO] Post-patch failures exceeded threshold; performing validate+patch cycle."
+                        )
+                        validate_and_restart_gmod()
+                        failure_ticks = 0
+                        post_patch_failure_attempts = 0
+                else:
+                    # First-time patch escalation for this failure window
+                    if failure_ticks >= PATCH_FAILURE_THRESHOLD:
+                        if run_gmod_patch_tool():
+                            patch_triggered_after_failures = True
+                            post_patch_failure_attempts = 0
+                            log_message(
+                                "✅ [INFO] Patch applied after repeated failures; watching for a successful reconnect."
+                            )
+                        else:
+                            log_message(
+                                "⚠️ [ERROR] Patch tool failed after repeated failures; "
+                                "will continue monitoring and may escalate to validation."
+                            )
+
+                # If we've hit the failure threshold with GMod running & server online, relaunch
+                if server_online and failure_ticks >= PATCH_FAILURE_THRESHOLD:
+                    if patch_triggered_after_failures:
+                        log_message(
+                            "🚀 [INFO] Repeated connection failures while the server was online; "
+                            "relaunching GMod after applying patch..."
+                        )
+                    else:
+                        log_message(
+                            "🚀 [INFO] Repeated connection failures while the server is online; "
+                            "relaunching GMod..."
+                        )
+                    launch_gmod()
 
             time.sleep(CHECK_INTERVAL)
 
@@ -1494,6 +1545,12 @@ def main() -> None:
         except Exception as e:
             log_message(f"⚠️ [ERROR] Unexpected exception in main loop: {e}")
             time.sleep(CHECK_INTERVAL)
+
+    # Keep terminal open after Ctrl+C so the user can see logs
+    try:
+        input("Press Enter to exit...")
+    except EOFError:
+        pass
 
 
 if __name__ == "__main__":
