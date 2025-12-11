@@ -1,39 +1,34 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-#
-# Swamp Reconnect Script — version 1.2-stable
-#
+##
 # This script automates reconnect behavior for the Swamp Cinema GMod server.
 # It monitors the local GMod process, detects connectivity to the server,
 # and applies recovery steps when the client becomes disconnected.
 #
-# Core detection logic:
+## Core detection logic:
 #   - GMod is considered “healthy” when:
 #       • the game process is running, AND
 #       • UDP traffic to the Swamp server is observed.
-#   - If UDP is silent, the script falls back to an A2S_INFO server probe.
 #
-# Recovery policy:
-#   - After N consecutive failed checks (default: 3), the script runs
-#     GModPatchTool (without validation) and may relaunch GMod.
-#   - If failures continue after patching, the script escalates to a full
-#     Steam file validation + patch cycle.
-#   - Repeated early crashes during launch also trigger validation.
+#   - If UDP traffic is not observed:
+#       • The script checks whether the Swamp server is online (A2S_INFO).
+#       • The script also checks whether the local-host has internet connectivity.
 #
-# GModPatchTool integration:
-#   - Automatically finds or downloads the correct platform build.
-#   - Handles stale/duplicate instances and cleans up leftover pid files.
-#   - Runs interactively via pexpect so all output appears in this console.
-#   - Always keeps GMod closed during patching.
+# Pausing & safety behavior:
+#   - If the local host appears OFFLINE (no internet connectivity):
+#       • The script pauses monitoring.
+#       • No reconnects, patching, or validation are attempted.
+#       • Status is logged clearly for the user.
 #
-# Additional features:
-#   - Auto-detects Swamp server IP from https://swamp.sv/.
-#   - Uses platform-appropriate process checks and network capture tools
-#     (tcpdump on Linux, dumpcap on Windows).
-#   - Prints clear state-change logs and minimizes unnecessary noise.
+#   - If the Swamp server or local-host appears OFFLINE:
+#       • The script pauses and waits for the server to return.
+#       • No reconnects, patching, or validation are attempted.
 #
-# This script is designed to be robust, self-correcting, and safe to run
-# unattended. Press Ctrl+C to exit at any time.
+# Recovery actions (patching / relaunch / validation) are ONLY triggered when:
+#   - The host is online, AND
+#   - The Swamp server is online, AND
+#   - GMod is running but disconnected or failing repeatedly.
+#   - Includes exception logic for unaccounted conditions such as Steam server maintenance
 
 
 __version__ = "DEV"
@@ -405,6 +400,16 @@ def is_server_online(ip: str, port: int = 27015, timeout: float = 2.0) -> bool:
         debug_log(f"Error checking server online status for {ip}:{port}: {e}")
         return False
 
+def is_host_online(timeout: float = 2.0) -> bool:
+    # Check whether the local machine appears to have internet connectivity.
+    # This does NOT depend on the Swamp server being reachable.
+    try:
+        # Cloudflare DNS – fast, reliable, no HTTP required
+        sock = socket.create_connection(("1.1.1.1", 53), timeout=timeout)
+        sock.close()
+        return True
+    except Exception:
+        return False
 
 def extract_gmod_patch_tool(zip_path: str, extract_to: str) -> str | None:
     # Normalize a downloaded archive into a clean GModPatchTool/ folder
@@ -1311,10 +1316,15 @@ def main() -> None:
             else:
                 connected = False
 
-            if connected:
-                server_online = True
+            host_online = is_host_online()
+
+            if not host_online:
+                server_online = False
             else:
-                server_online = is_server_online(server_ip)
+                if connected:
+                    server_online = True
+                else:
+                    server_online = is_server_online(server_ip)
 
             healthy = gmod_running and connected
 
@@ -1351,9 +1361,29 @@ def main() -> None:
                     )
 
             else:
-                # Not healthy: either server offline, or client down, or running-but-disconnected
+                # Not healthy: either host offline, server offline, client down,
+                # or running-but-disconnected
+
+                # 1) Local host offline: pause reconnect logic entirely
+                if not host_online:
+                    log_message(
+                        "🌐 [INFO] Local host appears OFFLINE (no internet connectivity detected). "
+                        "Pausing reconnect logic until network access is restored."
+                    )
+                    log_state_change(
+                        "connection",
+                        False,
+                        "🔴 [INFO] No UDP traffic (host offline).",
+                    )
+                    failure_ticks = 0
+                    patch_triggered_after_failures = False
+                    post_patch_failure_attempts = 0
+                    launch_failures = 0
+                    time.sleep(CHECK_INTERVAL)
+                    continue
+
+                # 2) Swamp server offline/unreachable: don't burn failure ticks or patch
                 if not server_online:
-                    # Server appears offline; don't burn failure ticks or patch
                     if gmod_running:
                         log_message(
                             "🌐 [INFO] Swamp server appears OFFLINE or unreachable. "
@@ -1376,7 +1406,9 @@ def main() -> None:
                     time.sleep(CHECK_INTERVAL)
                     continue
 
-                # Server is online from here down
+                # 3) From here down: host is online AND Swamp server is online,
+                #    but the connection is not healthy.
+
                 if not gmod_running:
                     # GMod is not running while server is online.
                     log_state_change(
@@ -1435,7 +1467,8 @@ def main() -> None:
                     time.sleep(CHECK_INTERVAL)
                     continue
 
-                # From here on: gmod_running == True, server_online == True, but no UDP = connection problem
+                # From here on: gmod_running == True, server_online == True,
+                # but no UDP = connection problem
                 log_state_change(
                     "gmod",
                     True,
@@ -1551,6 +1584,7 @@ def main() -> None:
         input("Press Enter to exit...")
     except EOFError:
         pass
+
 
 
 if __name__ == "__main__":
