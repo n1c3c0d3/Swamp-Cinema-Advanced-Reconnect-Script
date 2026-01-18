@@ -52,6 +52,9 @@ import signal  # For sending SIGTERM/SIGKILL to stale GModPatchTool processes
 # Optional debug logger (controlled by DEBUG flag)
 DEBUG = False
 
+# Internal one-time warning flags
+_warned_tcpdump_perm = False
+
 
 def debug_log(msg: str) -> None:
     # Internal debug logging controlled by DEBUG flag
@@ -297,7 +300,7 @@ def find_active_interface(ip: str) -> str:
             if os.path.exists(temp_file):
                 size = os.path.getsize(temp_file)
                 os.remove(temp_file)
-                if size > 0:
+                if size > 24:
                     return iface
         except subprocess.TimeoutExpired:
             if os.path.exists(temp_file):
@@ -340,7 +343,7 @@ def check_udp_traffic(ip: str, retries: int = MAX_RETRIES) -> bool:
                 if os.path.exists(temp_file):
                     size = os.path.getsize(temp_file)
                     os.remove(temp_file)
-                    if size > 0:
+                    if size > 24:
                         return True
             except subprocess.TimeoutExpired:
                 if os.path.exists(temp_file):
@@ -348,6 +351,11 @@ def check_udp_traffic(ip: str, retries: int = MAX_RETRIES) -> bool:
             time.sleep(2)
         return False
     else:
+        # Linux / macOS-ish path: tcpdump is often interrupted by `timeout`, which returns 124
+        # even when SOME packets were captured. So we judge success based on captured output,
+        # not only the return code.
+        global _warned_tcpdump_perm
+
         for attempt in range(retries):
             cmd = [
                 "timeout",
@@ -355,8 +363,8 @@ def check_udp_traffic(ip: str, retries: int = MAX_RETRIES) -> bool:
                 "tcpdump",
                 "-nn",
                 "-q",
-                "-c",
-                str(MIN_PACKET_THRESHOLD),
+                "udp",
+                "and",
                 "host",
                 ip,
             ]
@@ -364,14 +372,31 @@ def check_udp_traffic(ip: str, retries: int = MAX_RETRIES) -> bool:
                 result = subprocess.run(
                     cmd,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                     text=True,
                 )
-                if result.returncode == 0 and ip in result.stdout:
+
+                # Permission hint (common cause of always-false detection)
+                if (not _warned_tcpdump_perm) and result.stderr:
+                    low = result.stderr.lower()
+                    if "permission" in low or "operation not permitted" in low:
+                        _warned_tcpdump_perm = True
+                        log_message(
+                            "⚠️ [WARNING] tcpdump could not capture packets due to permissions. "
+                            "Run this script with sudo, or grant capture rights (e.g., setcap cap_net_raw,cap_net_admin=eip on tcpdump)."
+                        )
+
+                # Consider connected if we saw ANY udp packet lines to/from the server IP.
+                # (If MIN_PACKET_THRESHOLD isn't reached within CHECK_DURATION, that's still a real connection.)
+                lines = [ln for ln in (result.stdout or "").splitlines() if ln.strip()]
+                if lines:
                     return True
+
             except Exception as e:
                 debug_log(f"Error running tcpdump: {e}")
+
             time.sleep(2)
+
         return False
 
 
